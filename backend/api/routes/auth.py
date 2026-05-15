@@ -1,35 +1,40 @@
 from uuid import uuid4
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 from api.models.schemas import AuthResponse, LoginRequest, RegisterRequest, UserResponse
+from auth import create_access_token, get_current_user, hash_password, verify_password
+from db import get_db
+from models import User
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-def register_user(email: str, password: str) -> dict:
-    _ = password
-    return {"id": str(uuid4()), "email": email, "access_token": "token-123"}
-
-
-def authenticate_user(email: str, password: str) -> dict | None:
-    _ = email
-    _ = password
-    return None
-
-
 @router.post("/register", response_model=AuthResponse)
-async def register(request: RegisterRequest) -> AuthResponse:
-    payload = register_user(request.email, request.password)
-    return AuthResponse(**payload)
+async def register(request: RegisterRequest, db: Session = Depends(get_db)) -> AuthResponse:
+    existing = db.execute(select(User).where(User.email == request.email)).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="Email already exists")
+
+    user = User(id=str(uuid4()), email=request.email, password_hash=hash_password(request.password))
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    token = create_access_token(str(user.id))
+    return AuthResponse(id=str(user.id), email=user.email, access_token=token)
 
 
 @router.post("/login", response_model=AuthResponse)
-async def login(request: LoginRequest) -> AuthResponse:
-    payload = authenticate_user(request.email, request.password)
-    if payload is None:
+async def login(request: LoginRequest, db: Session = Depends(get_db)) -> AuthResponse:
+    user = db.execute(select(User).where(User.email == request.email)).scalar_one_or_none()
+    if user is None or not verify_password(request.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-    return AuthResponse(**payload)
+
+    token = create_access_token(str(user.id))
+    return AuthResponse(id=str(user.id), email=user.email, access_token=token)
 
 
 @router.get("/me", response_model=UserResponse)
-async def me() -> UserResponse:
-    return UserResponse(id=str(uuid4()), email="user@example.com")
+async def me(current_user: User = Depends(get_current_user)) -> UserResponse:
+    return UserResponse(id=str(current_user.id), email=current_user.email)
