@@ -1,6 +1,11 @@
-from uuid import uuid4
+import importlib.util
+
 from starlette.testclient import TestClient
 from main import app
+
+
+def test_legacy_auth_module_removed() -> None:
+    assert importlib.util.find_spec("auth") is None
 
 
 def test_new_auth_dependency_module_imports() -> None:
