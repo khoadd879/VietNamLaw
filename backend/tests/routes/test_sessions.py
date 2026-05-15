@@ -1,4 +1,11 @@
 from uuid import uuid4
+from dto.session import SessionResponse
+from entities.chat_session import ChatSession
+
+
+def test_new_session_modules_import() -> None:
+    assert SessionResponse is not None
+    assert ChatSession is not None
 
 
 def test_list_sessions_route_exists(client):

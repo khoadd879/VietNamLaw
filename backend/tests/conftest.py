@@ -12,9 +12,9 @@ def client():
 @pytest.fixture(scope="session", autouse=True)
 def setup_database():
     """Create tables once per test session."""
-    # Import models to register them with Base before create_all
-    import models as _  # noqa: F401
-    from db import Base, engine, init_db
+    from db.base import Base
+    from db.session import engine
+    from db.init_db import init_db
 
     init_db()
     yield
