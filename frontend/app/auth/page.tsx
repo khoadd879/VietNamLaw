@@ -1,8 +1,9 @@
 'use client'
 
+import Link from 'next/link'
 import { FormEvent, useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { login, register, storeAuthState } from '@/lib/api'
+import { isLoggedIn, login, register, storeAuthState } from '@/lib/api'
 
 type Mode = 'login' | 'register'
 type Theme = 'light' | 'dark'
@@ -23,7 +24,11 @@ export default function AuthPage() {
     const next = saved || 'light'
     setTheme(next)
     document.documentElement.setAttribute('data-theme', next)
-  }, [])
+
+    if (isLoggedIn()) {
+      router.replace('/')
+    }
+  }, [router])
 
   function toggleTheme() {
     const next: Theme = theme === 'light' ? 'dark' : 'light'
@@ -54,6 +59,11 @@ export default function AuthPage() {
 
     if (!email.trim() || !password.trim()) {
       setError('Vui lòng nhập đầy đủ email và mật khẩu.')
+      return
+    }
+
+    if (mode === 'register' && password.length < 8) {
+      setError('Mật khẩu cần ít nhất 8 ký tự.')
       return
     }
 
@@ -246,7 +256,7 @@ export default function AuthPage() {
               </div>
             </div>
 
-            <button className="hbtn" onClick={toggleTheme} title="Đổi giao diện">
+            <button className="hbtn" onClick={toggleTheme} title="Đổi giao diện" aria-label="Đổi giao diện sáng tối">
               <svg className="sun" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                 <circle cx="12" cy="12" r="5" />
                 <line x1="12" y1="1" x2="12" y2="3" />
@@ -335,20 +345,20 @@ export default function AuthPage() {
               </button>
             </form>
 
-            {error && <div className="feedback error">{error}</div>}
-            {success && <div className="feedback success">{success}</div>}
+            {error && <div className="feedback error" role="alert">{error}</div>}
+            {success && <div className="feedback success" role="status">{success}</div>}
 
             <div className="footnote">
               Bằng việc tiếp tục, bạn đồng ý lưu phiên tư vấn theo tài khoản để phục vụ lịch sử trao đổi và quản lý hồ sơ pháp lý cá nhân.
             </div>
 
-            <a className="return-link" href="/">
+            <Link className="return-link" href="/">
               <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                 <path d="M19 12H5" />
                 <path d="m12 19-7-7 7-7" />
               </svg>
               Quay lại giao diện chat
-            </a>
+            </Link>
           </div>
         </section>
       </div>

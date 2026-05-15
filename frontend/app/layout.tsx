@@ -1,8 +1,25 @@
 import type { Metadata } from 'next'
+import { Cormorant_Garamond, DM_Sans } from 'next/font/google'
+import { themeScript } from '@/components/theme-script'
+
+const cormorant = Cormorant_Garamond({
+  subsets: ['latin'],
+  weight: ['400', '600'],
+  variable: '--font-display',
+})
+
+const dmSans = DM_Sans({
+  subsets: ['latin'],
+  weight: ['300', '400', '500', '600'],
+  variable: '--font-body',
+})
 
 export const metadata: Metadata = {
   title: 'LexVN — Luật sư AI Việt Nam',
   description: 'Tư vấn pháp luật Việt Nam bằng AI',
+  icons: {
+    icon: '/icon.svg',
+  },
 }
 
 export default function RootLayout({
@@ -15,19 +32,13 @@ export default function RootLayout({
       <head>
         <meta charSet="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-        <link
-          href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600&family=DM+Sans:wght@300;400;500;600&display=swap"
-          rel="stylesheet"
-        />
         <script
           dangerouslySetInnerHTML={{
-            __html: `!function(){var t=localStorage.getItem('lexvn-theme')||'light';document.documentElement.setAttribute('data-theme',t)}()`,
+            __html: themeScript,
           }}
         />
       </head>
-      <body style={{ margin: 0 }}>{children}</body>
+      <body className={`${cormorant.variable} ${dmSans.variable}`} style={{ margin: 0 }}>{children}</body>
     </html>
   )
 }

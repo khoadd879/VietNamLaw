@@ -1,6 +1,8 @@
 'use client'
 
 import { useState, useRef, useEffect, FormEvent, KeyboardEvent } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { useRouter } from 'next/navigation'
 import {
   clearAuthState,
@@ -25,46 +27,12 @@ const SUGGESTIONS = [
   { title: '🏠 Đất đai & Nhà ở', desc: 'Sổ đỏ, tranh chấp, chuyển nhượng', q: 'Tranh chấp đất đai với hàng xóm phải làm gì?' },
 ]
 
-function parseMarkdown(text: string): string {
-  let t = text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-
-  t = t.replace(/^### (.+)$/gm, '<h4>$1</h4>')
-  t = t.replace(/^## (.+)$/gm, '<h3>$1</h3>')
-  t = t.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-  t = t.replace(/`([^`]+)`/g, '<code>$1</code>')
-
-  t = t.replace(/((?:^[-*] .+\n?)+)/gm, (block) => {
-    const items = block.trim().split('\n').map(l => `<li>${l.replace(/^[-*] /, '')}</li>`).join('')
-    return `<ul>${items}</ul>`
-  })
-  t = t.replace(/((?:^\d+\. .+\n?)+)/gm, (block) => {
-    const items = block.trim().split('\n').map(l => `<li>${l.replace(/^\d+\. /, '')}</li>`).join('')
-    return `<ol>${items}</ol>`
-  })
-
-  t = t
-    .split(/\n{2,}/)
-    .map(para => {
-      para = para.trim()
-      if (!para) return ''
-      if (para.match(/^<(h[34]|ul|ol)/)) return para
-      return `<p>${para.replace(/\n/g, '<br>')}</p>`
-    })
-    .join('')
-
-  return t
-}
-
 export default function Home() {
   const router = useRouter()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [theme, setTheme] = useState<'light' | 'dark'>('light')
-  const [inputFocused, setInputFocused] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -189,6 +157,11 @@ export default function Home() {
     setInput('')
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
     resetSession().catch(() => undefined)
+  }
+
+  function handleLogout() {
+    clearAuthState()
+    router.replace('/auth')
   }
 
   function ask(q: string) {
@@ -320,13 +293,20 @@ export default function Home() {
         </div>
 
         <div className="header-actions">
-          <button className="hbtn" onClick={clearChat} title="Cuộc hội thoại mới">
+          <button className="hbtn" onClick={clearChat} title="Cuộc hội thoại mới" aria-label="Tạo cuộc hội thoại mới">
             <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
               <line x1="12" y1="5" x2="12" y2="19" />
               <line x1="5" y1="12" x2="19" y2="12" />
             </svg>
           </button>
-          <button className="hbtn" onClick={toggleTheme} title="Đổi giao diện">
+          <button className="hbtn" onClick={handleLogout} title="Đăng xuất" aria-label="Đăng xuất khỏi tài khoản">
+            <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <polyline points="16 17 21 12 16 7" />
+              <line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+          </button>
+          <button className="hbtn" onClick={toggleTheme} title="Đổi giao diện" aria-label="Đổi giao diện sáng tối">
             <svg className="sun" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
               <circle cx="12" cy="12" r="5" />
               <line x1="12" y1="1" x2="12" y2="3" />
@@ -381,7 +361,7 @@ export default function Home() {
               <div className={`bubble ${msg.role}`}>
                 {msg.role === 'assistant' ? (
                   <>
-                    <div dangerouslySetInnerHTML={{ __html: parseMarkdown(msg.content) }} />
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
                     {msg.sources && msg.sources.length > 0 && (
                       <div className="bubble-sources">📚 Nguồn: {msg.sources.join(', ')}</div>
                     )}
@@ -412,15 +392,13 @@ export default function Home() {
             <span>Thông tin tư vấn mang tính tham khảo. Vui lòng tham khảo luật sư có thẩm quyền cho các vấn đề pháp lý quan trọng.</span>
           </div>
           <form onSubmit={handleFormSubmit}>
-            <div className={`input-box${inputFocused ? ' focused' : ''}`}>
+            <div className="input-box">
               <textarea
                 id="chatInput"
                 ref={textareaRef}
                 value={input}
                 onChange={handleInputChange}
                 onKeyDown={handleKeyDown}
-                onFocus={() => setInputFocused(true)}
-                onBlur={() => setInputFocused(false)}
                 placeholder="Hỏi bất kỳ vấn đề pháp lý nào…"
                 rows={1}
               />

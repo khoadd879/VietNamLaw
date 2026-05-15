@@ -248,7 +248,7 @@ export async function sendMessage(sessionId: string, message: string): Promise<C
   })
 
   if (!res.ok) {
-    throw new Error(await readError(res, 'Chat request failed'))
+    throw new Error(await readError(res, 'Không thể gửi yêu cầu chat'))
   }
 
   return res.json()
