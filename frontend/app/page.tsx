@@ -1,7 +1,16 @@
 'use client'
 
 import { useState, useRef, useEffect, FormEvent, KeyboardEvent } from 'react'
-import { sendMessage } from '@/lib/api'
+import { useRouter } from 'next/navigation'
+import {
+  clearAuthState,
+  isLoggedIn,
+  isNotFoundError,
+  isUnauthorizedError,
+  loadSessionHistory,
+  resetSession,
+  sendAuthedMessage,
+} from '@/lib/api'
 
 interface ChatMessage {
   role: 'user' | 'assistant'
@@ -50,6 +59,7 @@ function parseMarkdown(text: string): string {
 }
 
 export default function Home() {
+  const router = useRouter()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -64,7 +74,26 @@ export default function Home() {
       setTheme(saved)
       document.documentElement.setAttribute('data-theme', saved)
     }
-  }, [])
+
+    if (!isLoggedIn()) {
+      router.replace('/auth')
+      return
+    }
+
+    loadSessionHistory()
+      .then(setMessages)
+      .catch((error: unknown) => {
+        if (isUnauthorizedError(error)) {
+          clearAuthState()
+          router.replace('/auth')
+          return
+        }
+
+        if (isNotFoundError(error)) {
+          resetSession().catch(() => undefined)
+        }
+      })
+  }, [router])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -85,6 +114,11 @@ export default function Home() {
   async function submitMessage(text: string) {
     if (!text.trim() || loading) return
 
+    if (!isLoggedIn()) {
+      router.replace('/auth')
+      return
+    }
+
     const userMsg: ChatMessage = { role: 'user', content: text.trim() }
     setMessages(prev => [...prev, userMsg])
     setInput('')
@@ -92,12 +126,36 @@ export default function Home() {
     setLoading(true)
 
     try {
-      const res = await sendMessage(text.trim())
+      const res = await sendAuthedMessage(text.trim())
       setMessages(prev => [
         ...prev,
         { role: 'assistant', content: res.reply, sources: res.sources },
       ])
-    } catch {
+    } catch (error) {
+      if (isUnauthorizedError(error)) {
+        clearAuthState()
+        router.replace('/auth')
+        return
+      }
+
+      if (isNotFoundError(error)) {
+        try {
+          await resetSession()
+          const res = await sendAuthedMessage(text.trim())
+          setMessages(prev => [
+            ...prev,
+            { role: 'assistant', content: res.reply, sources: res.sources },
+          ])
+          return
+        } catch {
+          setMessages(prev => [
+            ...prev,
+            { role: 'assistant', content: '⚠️ Không thể khôi phục phiên chat. Vui lòng thử lại.' },
+          ])
+          return
+        }
+      }
+
       setMessages(prev => [
         ...prev,
         { role: 'assistant', content: '⚠️ Không thể kết nối. Vui lòng thử lại.' },
@@ -130,6 +188,7 @@ export default function Home() {
     setMessages([])
     setInput('')
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
+    resetSession().catch(() => undefined)
   }
 
   function ask(q: string) {
@@ -140,7 +199,7 @@ export default function Home() {
 
   return (
     <>
-      <style>{`
+      <style suppressHydrationWarning>{`
         :root {
           --gold: #B8965A;
           --gold-light: #D4AF6E;

@@ -23,7 +23,7 @@ export default function RootLayout({
         />
         <script
           dangerouslySetInnerHTML={{
-            __html: `(function(){var t=localStorage.getItem('lexvn-theme')||'light';document.documentElement.setAttribute('data-theme',t);})()`,
+            __html: `!function(){var t=localStorage.getItem('lexvn-theme')||'light';document.documentElement.setAttribute('data-theme',t)}()`,
           }}
         />
       </head>
