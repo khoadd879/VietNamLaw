@@ -1,4 +1,9 @@
-from api.services.gemini_service import build_prompt
+from services.gemini_service import build_prompt
+
+
+def test_new_gemini_service_imports() -> None:
+    prompt = build_prompt("Hỏi", ["Ngữ cảnh"])
+    assert "Ngữ cảnh" in prompt
 
 
 def test_build_prompt_includes_question_and_context() -> None:
