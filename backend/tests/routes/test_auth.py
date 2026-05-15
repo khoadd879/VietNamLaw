@@ -3,6 +3,12 @@ from starlette.testclient import TestClient
 from main import app
 
 
+def test_new_auth_dependency_module_imports() -> None:
+    from api.dependencies.auth import get_current_user
+
+    assert callable(get_current_user)
+
+
 def test_register_returns_user_and_token() -> None:
     client = TestClient(app)
     response = client.post("/auth/register", json={"email": "user@example.com", "password": "secret123"})
