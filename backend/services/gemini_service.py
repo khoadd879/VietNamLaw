@@ -14,7 +14,7 @@ def build_prompt(question: str, context_chunks: list[str]) -> str:
 
 
 def generate_answer(question: str, contexts: list[dict[str, str]]) -> str:
-    context_chunks = [item["content"] for item in contexts]
+    context_chunks = [item["content_text"] for item in contexts]
     prompt = build_prompt(question=question, context_chunks=context_chunks)
     client = genai.Client(api_key=GEMINI_API_KEY)
     response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)

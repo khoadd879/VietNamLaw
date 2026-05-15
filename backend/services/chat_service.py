@@ -12,7 +12,7 @@ def send_chat_message(db, session_id: str, user_id: str, message: str) -> tuple[
 
     contexts = search_legal_context(message)
     reply = generate_answer(message, contexts)
-    sources = [item.get("source", "") for item in contexts if item.get("source")]
+    sources = [item.get("source_url", "") for item in contexts if item.get("source_url")]
 
     save_message(db, session_id, user_id, "assistant", reply, {"sources": sources})
 
