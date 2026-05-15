@@ -1,13 +1,22 @@
-from fastapi import APIRouter
-from api.models.schemas import ChatRequest, ChatResponse
-from api.services.gemini_service import generate_answer
-from api.services.qdrant_service import search_legal_context
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from dto.chat import ChatRequest, ChatResponse
+from api.dependencies.auth import get_current_user
+from api.dependencies.database import get_db
+from entities.user import User
+from services.chat_service import send_chat_message
 
 router = APIRouter()
 
+
 @router.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest) -> ChatResponse:
-    contexts = search_legal_context(request.message)
-    reply = generate_answer(request.message, contexts)
-    sources = [item["source"] for item in contexts if item.get("source")]
+async def chat(
+    request: ChatRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ChatResponse:
+    try:
+        reply, sources = send_chat_message(db, request.session_id, str(current_user.id), request.message)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return ChatResponse(reply=reply, sources=sources)

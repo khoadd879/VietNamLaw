@@ -1,11 +1,17 @@
-from uuid import uuid4
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import delete, select
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from auth import get_current_user
-from db import get_db
-from models import ChatMessage, ChatSession, User
-from api.models.schemas import MessageResponse, SessionCreateRequest, SessionResponse, SessionUpdateRequest
+from dto.session import MessageResponse, SessionCreateRequest, SessionResponse, SessionUpdateRequest
+from api.dependencies.auth import get_current_user
+from api.dependencies.database import get_db
+from entities.user import User
+from services.session_service import (
+    create_session as svc_create_session,
+    delete_session as svc_delete_session,
+    get_messages as svc_get_messages,
+    get_session as svc_get_session,
+    list_sessions as svc_list_sessions,
+    rename_session as svc_rename_session,
+)
 
 router = APIRouter(prefix="/chat/sessions", tags=["chat-sessions"])
 
@@ -16,14 +22,7 @@ async def create_session(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> SessionResponse:
-    session = ChatSession(
-        id=str(uuid4()),
-        user_id=str(current_user.id),
-        title=request.title or "Cuộc trò chuyện mới",
-    )
-    db.add(session)
-    db.commit()
-    db.refresh(session)
+    session = svc_create_session(db, str(current_user.id), request.title)
     return SessionResponse(id=str(session.id), user_id=str(session.user_id), title=session.title)
 
 
@@ -32,9 +31,7 @@ async def list_sessions(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[SessionResponse]:
-    sessions = db.execute(
-        select(ChatSession).where(ChatSession.user_id == str(current_user.id)).order_by(ChatSession.updated_at.desc())
-    ).scalars().all()
+    sessions = svc_list_sessions(db, str(current_user.id))
     return [SessionResponse(id=str(s.id), user_id=str(s.user_id), title=s.title) for s in sessions]
 
 
@@ -44,11 +41,9 @@ async def get_session(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> SessionResponse:
-    session = db.execute(
-        select(ChatSession).where(ChatSession.id == session_id, ChatSession.user_id == str(current_user.id))
-    ).scalar_one_or_none()
+    session = svc_get_session(db, session_id, str(current_user.id))
     if session is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+        raise HTTPException(status_code=404, detail="Session not found")
     return SessionResponse(id=str(session.id), user_id=str(session.user_id), title=session.title)
 
 
@@ -59,14 +54,9 @@ async def rename_session(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> SessionResponse:
-    session = db.execute(
-        select(ChatSession).where(ChatSession.id == session_id, ChatSession.user_id == str(current_user.id))
-    ).scalar_one_or_none()
+    session = svc_rename_session(db, session_id, str(current_user.id), request.title)
     if session is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
-    session.title = request.title
-    db.commit()
-    db.refresh(session)
+        raise HTTPException(status_code=404, detail="Session not found")
     return SessionResponse(id=str(session.id), user_id=str(session.user_id), title=session.title)
 
 
@@ -76,14 +66,9 @@ async def delete_session(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, bool]:
-    session = db.execute(
-        select(ChatSession).where(ChatSession.id == session_id, ChatSession.user_id == str(current_user.id))
-    ).scalar_one_or_none()
-    if session is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
-    db.execute(delete(ChatMessage).where(ChatMessage.session_id == session_id))
-    db.execute(delete(ChatSession).where(ChatSession.id == session_id))
-    db.commit()
+    deleted = svc_delete_session(db, session_id, str(current_user.id))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Session not found")
     return {"deleted": True}
 
 
@@ -93,14 +78,10 @@ async def list_messages(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[MessageResponse]:
-    session = db.execute(
-        select(ChatSession).where(ChatSession.id == session_id, ChatSession.user_id == str(current_user.id))
-    ).scalar_one_or_none()
+    session = svc_get_session(db, session_id, str(current_user.id))
     if session is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
-    messages = db.execute(
-        select(ChatMessage).where(ChatMessage.session_id == session_id).order_by(ChatMessage.created_at.asc())
-    ).scalars().all()
+        raise HTTPException(status_code=404, detail="Session not found")
+    messages = svc_get_messages(db, session_id)
     return [
         MessageResponse(
             id=str(m.id),
