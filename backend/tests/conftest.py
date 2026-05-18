@@ -1,12 +1,14 @@
 import pytest
-from starlette.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 
 
 @pytest.fixture
-def client():
+async def client():
     from main import app
 
-    return TestClient(app)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        yield client
 
 
 @pytest.fixture(scope="session", autouse=True)

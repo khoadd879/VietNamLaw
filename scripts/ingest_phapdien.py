@@ -4,6 +4,7 @@ Ingestion script for phapdien-moj-gov-vn dataset.
 Loads Vietnamese legal articles from HuggingFace, embeds via Gemini, upserts to Qdrant Cloud.
 """
 
+import argparse
 import json
 import os
 import sys
@@ -15,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
 
 from datasets import load_dataset
 
-from backend.core.config import (
+from core.config import (
     GEMINI_API_KEY,
     GEMINI_EMBEDDING_MODEL,
     INGEST_BATCH_SIZE,
@@ -23,7 +24,7 @@ from backend.core.config import (
     QDRANT_COLLECTION_NAME,
     QDRANT_URL,
 )
-from backend.services.qdrant_service import embed_texts, ensure_collection_exists, get_qdrant_client, ingest_articles
+from services.qdrant_service import embed_texts, ensure_collection_exists, get_qdrant_client, ingest_articles
 
 
 def get_checkpoint_path() -> Path:
@@ -53,6 +54,11 @@ def save_checkpoint(last_processed_index: int, last_processed_id: str) -> None:
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Ingest phapdien-moj-gov-vn dataset into Qdrant")
+    parser.add_argument("--limit", type=int, default=None, help="Process at most N articles (smoke test)")
+    parser.add_argument("--reset-checkpoint", action="store_true", help="Ignore existing checkpoint and start from 0")
+    args = parser.parse_args()
+
     print("=" * 60)
     print("phapdien-moj-gov-vn Ingestion Script")
     print("=" * 60)
@@ -66,7 +72,7 @@ def main():
         sys.exit(1)
 
     # Check for checkpoint
-    checkpoint = load_checkpoint()
+    checkpoint = None if args.reset_checkpoint else load_checkpoint()
     start_index = 0
     if checkpoint:
         start_index = checkpoint["last_processed_index"] + 1
@@ -76,7 +82,7 @@ def main():
 
     # Load dataset
     print("\nLoading dataset from HuggingFace...")
-    dataset = load_dataset("tmquan/phapdien-moj-gov-vn", split="articles")
+    dataset = load_dataset("tmquan/phapdien-moj-gov-vn", split="train")
     total_articles = len(dataset)
     print(f"Dataset loaded: {total_articles} articles")
 
@@ -108,6 +114,11 @@ def main():
         }
         articles_to_process.append(article)
 
+        if args.limit is not None and len(articles_to_process) >= args.limit:
+            break
+
+    if args.limit is not None:
+        print(f"Limit applied: {args.limit}")
     print(f"Articles to process: {len(articles_to_process)}")
 
     # Process in batches

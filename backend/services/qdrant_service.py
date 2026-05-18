@@ -1,21 +1,28 @@
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
+import httpx
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
+    Filter,
+    FieldCondition,
+    MatchText,
     PointStruct,
     ScoredPoint,
-    SearchParams,
-    VectorSize,
+    VectorParams,
 )
 
-from backend.core.config import (
-    GEMINI_API_KEY,
-    GEMINI_EMBEDDING_MODEL,
+from core.config import (
+    OLLAMA_EMBEDDING_MODEL,
+    OLLAMA_URL,
     QDRANT_API_KEY,
     QDRANT_COLLECTION_NAME,
     QDRANT_URL,
 )
+
+
+_EMBED_TIMEOUT_SECONDS = 60.0
 
 
 def get_qdrant_client() -> QdrantClient:
@@ -24,7 +31,7 @@ def get_qdrant_client() -> QdrantClient:
 
 
 def ensure_collection_exists(client: QdrantClient) -> None:
-    """Create collection if not exists with 768 dims, cosine distance."""
+    """Create collection if not exists with 1024 dims, cosine distance."""
     collections = client.get_collections().collections
     collection_names = [c.name for c in collections]
 
@@ -33,60 +40,40 @@ def ensure_collection_exists(client: QdrantClient) -> None:
 
     client.create_collection(
         collection_name=QDRANT_COLLECTION_NAME,
-        vectors_config=VectorSize(size=768, distance=Distance.COSINE),
+        vectors_config=VectorParams(size=1024, distance=Distance.COSINE),
     )
 
-    # Create payload indexes for filtering
-    client.create_payload_index(
-        collection_name=QDRANT_COLLECTION_NAME,
-        field_name="topic_title",
-        field_schema="keyword",
-    )
-    client.create_payload_index(
-        collection_name=QDRANT_COLLECTION_NAME,
-        field_name="demuc_title",
-        field_schema="keyword",
-    )
-    client.create_payload_index(
-        collection_name=QDRANT_COLLECTION_NAME,
-        field_name="article_anchor",
-        field_schema="keyword",
-    )
-    client.create_payload_index(
-        collection_name=QDRANT_COLLECTION_NAME,
-        field_name="source_url",
-        field_schema="keyword",
-    )
+    for field_name in ("topic_title", "demuc_title", "article_anchor", "source_url"):
+        client.create_payload_index(
+            collection_name=QDRANT_COLLECTION_NAME,
+            field_name=field_name,
+            field_schema="keyword",
+        )
 
 
-def embed_texts(texts: list[str]) -> list[list[float]]:
-    """Embed texts via Gemini embedding-001 API."""
-    embeddings = []
+def embed_texts(texts: list[str], task_type: str | None = None) -> list[list[float]]:
+    """Embed texts via local Ollama model (e.g. bge-m3, 1024 dims).
 
-    # Gemini batch embedding - process in chunks of 100 per API limit
-    batch_size = 100
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i : i + batch_size]
+    `task_type` is accepted for API compatibility but ignored — bge-m3 does not
+    differentiate query vs document embeddings.
+    """
+    if not texts:
+        return []
 
-        response = GEMINI_API_KEY or ""
-        if not response:
-            raise ValueError("GEMINI_API_KEY not configured")
-
-        # Import here to avoid circular import
-        from google import genai
-
-        client = genai.Client(api_key=response)
-
-        batch_embeddings = []
-        for text in batch:
-            result = client.models.embed_content(
-                model=GEMINI_EMBEDDING_MODEL,
-                content=text,
+    url = f"{OLLAMA_URL.rstrip('/')}/api/embed"
+    embeddings: list[list[float]] = []
+    with httpx.Client(timeout=_EMBED_TIMEOUT_SECONDS) as client:
+        for text in texts:
+            response = client.post(
+                url,
+                json={"model": OLLAMA_EMBEDDING_MODEL, "input": text},
             )
-            embedding = result.embeddings[0].values
-            batch_embeddings.append(embedding)
-
-        embeddings.extend(batch_embeddings)
+            response.raise_for_status()
+            data = response.json()
+            batch = data.get("embeddings") or ([data["embedding"]] if data.get("embedding") else [])
+            if not batch:
+                raise ValueError(f"Ollama returned no embedding for text: {text[:80]!r}")
+            embeddings.append(batch[0])
 
     return embeddings
 
@@ -95,17 +82,15 @@ def ingest_articles(articles: list[dict], batch_size: int = 100) -> None:
     """Batch embed articles and upsert to Qdrant."""
     client = get_qdrant_client()
 
-    # Prepare texts for embedding
     texts = [article["content_text"] for article in articles]
+    vectors = embed_texts(texts, task_type="RETRIEVAL_DOCUMENT")
 
-    # Batch embed
-    vectors = embed_texts(texts)
-
-    # Build points
     points = []
     for i, article in enumerate(articles):
+        raw_id = str(article["id"])
+        point_id = str(uuid5(NAMESPACE_URL, f"phapdien:{raw_id}"))
         point = PointStruct(
-            id=article["id"],
+            id=point_id,
             vector=vectors[i],
             payload={
                 "content_text": article["content_text"],
@@ -120,7 +105,6 @@ def ingest_articles(articles: list[dict], batch_size: int = 100) -> None:
         )
         points.append(point)
 
-    # Upsert to Qdrant
     client.upsert(collection_name=QDRANT_COLLECTION_NAME, points=points)
 
 
@@ -129,18 +113,14 @@ def search_legal_context(
     filters: dict | None = None,
     top_k: int = 5,
 ) -> list[dict[str, Any]]:
-    """Embed message, ANN search in Qdrant, return top results with payload."""
+    """Embed message via Ollama, ANN search in Qdrant, return top results."""
     client = get_qdrant_client()
 
-    # Embed query
-    vectors = embed_texts([message])
+    vectors = embed_texts([message], task_type="RETRIEVAL_QUERY")
     query_vector = vectors[0]
 
-    # Build Qdrant filter
     qdrant_filter = None
     if filters:
-        from qdrant_client.models import FieldCondition, MatchText, Filter
-
         conditions = []
         if filters.get("topic_title"):
             conditions.append(
@@ -159,25 +139,20 @@ def search_legal_context(
         if conditions:
             qdrant_filter = Filter(must=conditions)
 
-    # Search
-    results: list[ScoredPoint] = client.search(
+    response = client.query_points(
         collection_name=QDRANT_COLLECTION_NAME,
-        query_vector=query_vector,
+        query=query_vector,
         query_filter=qdrant_filter,
         limit=top_k,
-        search_params=SearchParams(hnsw_algorithm=None),
     )
+    results: list[ScoredPoint] = list(response.points)
 
-    # Format response
-    formatted_results = []
-    for point in results:
-        formatted_results.append(
-            {
-                "content_text": point.payload.get("content_text", ""),
-                "article_title": point.payload.get("article_title", ""),
-                "source_url": point.payload.get("source_url", ""),
-                "score": point.score,
-            }
-        )
-
-    return formatted_results
+    return [
+        {
+            "content_text": point.payload.get("content_text", ""),
+            "article_title": point.payload.get("article_title", ""),
+            "source_url": point.payload.get("source_url", ""),
+            "score": point.score,
+        }
+        for point in results
+    ]

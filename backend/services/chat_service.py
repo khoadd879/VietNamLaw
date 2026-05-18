@@ -1,4 +1,4 @@
-from services.gemini_service import generate_answer
+from services.answer_service import generate_answer
 from services.qdrant_service import search_legal_context
 from services.session_service import get_session, save_message
 

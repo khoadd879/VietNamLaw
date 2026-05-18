@@ -1,8 +1,15 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from api.routes import router
+from db.init_db import init_db
 
 app = FastAPI()
+
+
+@app.on_event("startup")
+def startup() -> None:
+    init_db()
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -14,10 +21,7 @@ app.add_middleware(
 
 app.include_router(router)
 
+
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
-
-@app.get("/")
-async def root():
-    return {"message": "Vietnam Law Chatbot API"}

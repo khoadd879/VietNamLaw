@@ -1,42 +1,84 @@
-"""Tests for qdrant_service.py - embedding and search functionality."""
 from unittest.mock import MagicMock, patch
 
 
-def test_embed_texts_returns_correct_dims() -> None:
-    """Call embed_texts with known strings, verify 768-dim vectors returned."""
+class FakeResponse:
+    def __init__(self, json_data: dict, status_code: int = 200):
+        self._json = json_data
+        self.status_code = status_code
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"http {self.status_code}")
+
+    def json(self) -> dict:
+        return self._json
+
+
+class FakeHttpClient:
+    def __init__(self, responses: list[FakeResponse]):
+        self._responses = list(responses)
+        self.calls: list[dict] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    def post(self, url: str, json: dict) -> FakeResponse:
+        self.calls.append({"url": url, "json": json})
+        if not self._responses:
+            raise AssertionError("no fake responses left")
+        return self._responses.pop(0)
+
+
+def make_embed_response(values: list[float]) -> FakeResponse:
+    return FakeResponse({"embeddings": [values]})
+
+
+def test_embed_texts_calls_ollama_with_configured_model() -> None:
     from services.qdrant_service import embed_texts
 
-    test_texts = ["Điều kiện ly hôn đơn phương", "Quyền nuôi con sau ly hôn"]
+    fake_client = FakeHttpClient([make_embed_response([0.1] * 1024)])
 
-    # Mock the Gemini client
-    mock_embedding_values = [0.1] * 768
-    mock_embedding = MagicMock()
-    mock_embedding.embeddings = [MagicMock(values=mock_embedding_values)]
+    with patch("services.qdrant_service.httpx.Client", return_value=fake_client):
+        with patch("services.qdrant_service.OLLAMA_URL", "http://localhost:11434"):
+            with patch("services.qdrant_service.OLLAMA_EMBEDDING_MODEL", "bge-m3"):
+                vectors = embed_texts(["Điều kiện ly hôn đơn phương"])
 
-    mock_result = MagicMock()
-    mock_result.embeddings = mock_embedding.embeddings
-
-    with patch("services.qdrant_service.genai.Client") as mock_client_class:
-        mock_client_instance = MagicMock()
-        mock_client_instance.models.embed_content.return_value = mock_result
-        mock_client_class.return_value = mock_client_instance
-
-        with patch("services.qdrant_service.GEMINI_API_KEY", "fake-key"):
-            with patch("services.qdrant_service.GEMINI_EMBEDDING_MODEL", "embedding-001"):
-                vectors = embed_texts(test_texts)
-
-    assert len(vectors) == 2, "Should return 2 vectors for 2 inputs"
-    for vector in vectors:
-        assert len(vector) == 768, f"Vector should have 768 dims, got {len(vector)}"
-        # Check vector values are consistent
-        assert all(abs(v - 0.1) < 0.001 for v in vector), "Vector values should match mock"
+    assert len(vectors) == 1
+    assert len(vectors[0]) == 1024
+    assert fake_client.calls[0]["url"] == "http://localhost:11434/api/embed"
+    assert fake_client.calls[0]["json"]["model"] == "bge-m3"
+    assert fake_client.calls[0]["json"]["input"] == "Điều kiện ly hôn đơn phương"
 
 
-def test_search_legal_context_returns_list() -> None:
-    """Call search_legal_context, verify list returned."""
+def test_embed_texts_returns_empty_when_no_inputs() -> None:
+    from services.qdrant_service import embed_texts
+
+    with patch("services.qdrant_service.httpx.Client") as mock_client:
+        result = embed_texts([])
+
+    assert result == []
+    mock_client.assert_not_called()
+
+
+def test_embed_texts_raises_when_ollama_returns_no_embedding() -> None:
+    from services.qdrant_service import embed_texts
+
+    fake_client = FakeHttpClient([FakeResponse({})])
+
+    with patch("services.qdrant_service.httpx.Client", return_value=fake_client):
+        try:
+            embed_texts(["abc"])
+            raise AssertionError("expected ValueError")
+        except ValueError as exc:
+            assert "no embedding" in str(exc).lower()
+
+
+def test_search_legal_context_returns_formatted_results() -> None:
     from services.qdrant_service import search_legal_context
 
-    # Mock Qdrant client search response
     mock_point = MagicMock()
     mock_point.payload = {
         "content_text": "Luật quy định về ly hôn",
@@ -45,104 +87,100 @@ def test_search_legal_context_returns_list() -> None:
     }
     mock_point.score = 0.95
 
-    mock_results = [mock_point]
+    mock_response = MagicMock()
+    mock_response.points = [mock_point]
 
     with patch("services.qdrant_service.get_qdrant_client") as mock_get_client:
         mock_client = MagicMock()
-        mock_client.search.return_value = mock_results
+        mock_client.query_points.return_value = mock_response
         mock_get_client.return_value = mock_client
 
         with patch("services.qdrant_service.embed_texts") as mock_embed:
-            mock_embed.return_value = [[0.1] * 768]
-
+            mock_embed.return_value = [[0.1] * 1024]
             results = search_legal_context(message="Điều kiện ly hôn là gì?")
 
-    assert isinstance(results, list), "Should return a list"
-    assert len(results) == 1, "Should return 1 result"
-    assert "content_text" in results[0]
-    assert "article_title" in results[0]
-    assert "source_url" in results[0]
-    assert "score" in results[0]
+    assert len(results) == 1
+    assert results[0]["content_text"] == "Luật quy định về ly hôn"
+    assert results[0]["article_title"] == "Điều 56 - Ly hôn"
+    assert results[0]["source_url"] == "https://phapdien.moj.gov.vn/article/56"
     assert results[0]["score"] == 0.95
 
 
-def test_search_with_filters() -> None:
-    """If filters passed, verify filtering applied."""
+def test_search_with_topic_filter_passes_filter_to_qdrant() -> None:
     from services.qdrant_service import search_legal_context
 
-    mock_point = MagicMock()
-    mock_point.payload = {
-        "content_text": "Quy định về hôn nhân",
-        "article_title": "Chương III - Hôn nhân",
-        "source_url": "https://phapdien.moj.gov.vn/chapter/3",
-    }
-    mock_point.score = 0.88
+    mock_response = MagicMock()
+    mock_response.points = []
 
     with patch("services.qdrant_service.get_qdrant_client") as mock_get_client:
         mock_client = MagicMock()
-        mock_client.search.return_value = [mock_point]
+        mock_client.query_points.return_value = mock_response
         mock_get_client.return_value = mock_client
 
         with patch("services.qdrant_service.embed_texts") as mock_embed:
-            mock_embed.return_value = [[0.2] * 768]
-
-            # Call with filter
-            filters = {"topic_title": "Luật Hôn nhân và Gia đình"}
-            results = search_legal_context(
+            mock_embed.return_value = [[0.2] * 1024]
+            search_legal_context(
                 message="Quy định về hôn nhân",
-                filters=filters,
+                filters={"topic_title": "Luật Hôn nhân và Gia đình"},
                 top_k=5,
             )
 
-    # Verify search was called
-    mock_client.search.assert_called_once()
-    call_kwargs = mock_client.search.call_args.kwargs
-
-    # Verify filter was passed
-    assert call_kwargs["query_filter"] is not None, "Filter should be passed"
-    assert call_kwargs["limit"] == 5, "top_k should be passed as limit"
+    call_kwargs = mock_client.query_points.call_args.kwargs
+    assert call_kwargs["query_filter"] is not None
+    assert call_kwargs["limit"] == 5
     assert call_kwargs["collection_name"] == "legal_articles"
 
 
-def test_search_with_demuc_filter() -> None:
-    """Verify demuc_title filter is applied correctly."""
+def test_search_with_both_filters_creates_two_conditions() -> None:
     from services.qdrant_service import search_legal_context
+
+    mock_response = MagicMock()
+    mock_response.points = []
 
     with patch("services.qdrant_service.get_qdrant_client") as mock_get_client:
         mock_client = MagicMock()
-        mock_client.search.return_value = []
+        mock_client.query_points.return_value = mock_response
         mock_get_client.return_value = mock_client
 
         with patch("services.qdrant_service.embed_texts") as mock_embed:
-            mock_embed.return_value = [[0.3] * 768]
+            mock_embed.return_value = [[0.4] * 1024]
+            search_legal_context(
+                message="Ly hôn",
+                filters={
+                    "topic_title": "Luật Hôn nhân",
+                    "demuc_title": "Điều 55",
+                },
+            )
 
-            filters = {"demuc_title": "Chương II"}
-            search_legal_context(message="Nội dung", filters=filters)
-
-    call_kwargs = mock_client.search.call_args.kwargs
-    assert call_kwargs["query_filter"] is not None
-
-
-def test_search_with_both_filters() -> None:
-    """Verify both topic_title and demuc_title filters are applied."""
-    from services.qdrant_service import search_legal_context
-
-    with patch("services.qdrant_service.get_qdrant_client") as mock_get_client:
-        mock_client = MagicMock()
-        mock_client.search.return_value = []
-        mock_get_client.return_value = mock_client
-
-        with patch("services.qdrant_service.embed_texts") as mock_embed:
-            mock_embed.return_value = [[0.4] * 768]
-
-            filters = {
-                "topic_title": "Luật Hôn nhân",
-                "demuc_title": "Điều 55",
-            }
-            search_legal_context(message="Ly hôn", filters=filters)
-
-    call_kwargs = mock_client.search.call_args.kwargs
-    qdrant_filter = call_kwargs["query_filter"]
+    qdrant_filter = mock_client.query_points.call_args.kwargs["query_filter"]
     assert qdrant_filter is not None
     assert qdrant_filter.must is not None
-    assert len(qdrant_filter.must) == 2, "Both filters should create 2 conditions"
+    assert len(qdrant_filter.must) == 2
+
+
+def test_ingest_articles_calls_embed_with_documents() -> None:
+    from services.qdrant_service import ingest_articles
+
+    article = {
+        "id": "art-1",
+        "content_text": "Quy định về ly hôn",
+        "article_title": "Điều 56",
+        "article_anchor": "art-1",
+        "topic_title": "Luật Hôn nhân",
+        "topic_id": "t-1",
+        "demuc_title": "Mục 1",
+        "demuc_id": "d-1",
+        "source_url": "https://example.com/56",
+    }
+
+    with patch("services.qdrant_service.get_qdrant_client") as mock_get_client:
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+
+        with patch("services.qdrant_service.embed_texts") as mock_embed:
+            mock_embed.return_value = [[0.2] * 1024]
+            ingest_articles([article])
+
+    args, kwargs = mock_embed.call_args
+    texts = args[0] if args else kwargs.get("texts")
+    assert texts == ["Quy định về ly hôn"]

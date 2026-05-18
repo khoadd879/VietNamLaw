@@ -9,7 +9,7 @@ Authenticated legal chatbot with Neon-backed user accounts and session history.
 - **Database**: Neon Postgres
 - **Auth**: JWT (email/password)
 - **Vector DB**: Qdrant
-- **LLM**: Google Gemini
+- **LLM**: Groq (answer generation) + Ollama `bge-m3` @ 1024 dims (embeddings)
 
 ## Project Structure
 
@@ -27,7 +27,8 @@ VietNamLaw/
 ```bash
 cd backend
 cp .env.example .env
-# Add NEON_DATABASE_URL, JWT_SECRET_KEY, GEMINI_API_KEY, QDRANT credentials
+# Add NEON_DATABASE_URL, JWT_SECRET_KEY, GROQ_API_KEY_1..3, GEMINI_API_KEY, QDRANT credentials
+# GROQ_* is used for answer generation with key rotation, GEMINI_* is used for embeddings
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
