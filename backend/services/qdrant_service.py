@@ -1,3 +1,4 @@
+import time
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
@@ -27,7 +28,7 @@ _EMBED_TIMEOUT_SECONDS = 300.0
 
 def get_qdrant_client() -> QdrantClient:
     """Get Qdrant client configured from environment."""
-    return QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+    return QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, timeout=300)
 
 
 def ensure_collection_exists(client: QdrantClient) -> None:
@@ -105,7 +106,17 @@ def ingest_articles(articles: list[dict], batch_size: int = 100) -> None:
         )
         points.append(point)
 
-    client.upsert(collection_name=QDRANT_COLLECTION_NAME, points=points)
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            client.upsert(collection_name=QDRANT_COLLECTION_NAME, points=points)
+            return
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise
+            wait = 2 ** attempt
+            print(f"  [upsert retry {attempt+1}/{max_retries}] {e} — waiting {wait}s")
+            time.sleep(wait)
 
 
 def search_legal_context(
