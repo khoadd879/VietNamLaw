@@ -22,7 +22,7 @@ from core.config import (
 )
 
 
-_EMBED_TIMEOUT_SECONDS = 60.0
+_EMBED_TIMEOUT_SECONDS = 300.0
 
 
 def get_qdrant_client() -> QdrantClient:
