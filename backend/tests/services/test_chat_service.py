@@ -41,7 +41,6 @@ def fake_session(monkeypatch):
     # Sprint 3: stub hybrid retrieval pipeline (can be overridden per-test)
     monkeypatch.setattr(chat_service, "hybrid_search", lambda *_, **__: [])
     monkeypatch.setattr(chat_service, "multi_query_expand", lambda q, n_variants=2: [q])
-    monkeypatch.setattr(chat_service, "walk_relationships", lambda *_, **__: [])
     monkeypatch.setattr(chat_service, "verify_citations", lambda s, c: s)
 
     return db
@@ -378,7 +377,6 @@ def test_chat_uses_hybrid_search_instead_of_pure_vector(fake_session, monkeypatc
     def multi_expand(msg, n_variants=2):
         return [msg, msg + " variant", msg + " variant 2"]
     monkeypatch.setattr(chat_service, "multi_query_expand", multi_expand)
-    monkeypatch.setattr(chat_service, "walk_relationships", lambda chunks, **__: [])
     monkeypatch.setattr(
         chat_service, "two_stage_reason",
         lambda **_: {
@@ -402,57 +400,6 @@ def test_chat_uses_hybrid_search_instead_of_pure_vector(fake_session, monkeypatc
     assert captured["query"].startswith("ly hôn đơn phương")
 
 
-def test_chat_merges_hybrid_and_crossref_contexts(fake_session, monkeypatch) -> None:
-    monkeypatch.setattr(chat_service, "list_recent_messages", lambda *_, **__: [])
-    monkeypatch.setattr(chat_service, "list_case_facts", lambda *_: [])
-    class FakeS:
-        case_type = None
-        case_summary = None
-    monkeypatch.setattr(chat_service, "get_session", lambda *_: FakeS())
-
-    # First query = hybrid result; subsequent queries = empty (simulating dedup collapse)
-    hybrid_chunks = [
-        {"id": "1", "content_text": "Điều 51", "title": "L", "source_url": "u", "score": 0.9},
-    ]
-    crossref = [
-        {"id": "2", "content_text": "Nghị định 126 hướng dẫn Điều 51", "title": "NĐ 126", "source_url": "v", "score": 0.0},
-    ]
-
-    call_count = [0]
-    def hybrid_side_effect(query, **kwargs):
-        call_count[0] += 1
-        # First call gets a meaningful result; subsequent calls (if any) get empty
-        if call_count[0] == 1:
-            return hybrid_chunks
-        return []
-
-    monkeypatch.setattr(chat_service, "hybrid_search", hybrid_side_effect)
-    monkeypatch.setattr(chat_service, "multi_query_expand", lambda q, n_variants=2: [q])
-    monkeypatch.setattr(chat_service, "walk_relationships", lambda *_, **__: crossref)
-
-    captured = {}
-    def fake_two_stage(**kwargs):
-        captured["context_ids"] = [c.get("id") for c in kwargs["contexts"]]
-        return {
-            "structured": {
-                "loi_chao": "", "tom_tat_vu_viec": "", "phan_tich_phap_ly": "ok",
-                "phuong_an_khuyen_nghi": [], "rui_ro_can_luu_y": [],
-                "cau_hoi_hoi_them": [], "disclaimer": "ok", "trich_dan_nguon": []
-            },
-            "extracted": {"case_type": None, "extracted_facts": [], "case_summary": None},
-            "updated_case_type": None, "updated_case_summary": None,
-        }
-    monkeypatch.setattr(chat_service, "two_stage_reason", fake_two_stage)
-    monkeypatch.setattr(chat_service, "verify_citations", lambda s, c: s)
-    monkeypatch.setattr(chat_service, "add_fact", lambda *_, **__: object())
-    monkeypatch.setattr(chat_service, "update_session_case", lambda *_, **__: object())
-    monkeypatch.setattr(chat_service, "save_message", lambda *_, **__: FakeMsg())
-
-    send_chat_message(db=fake_session, session_id="s1", user_id="u1", message="q")
-    assert "1" in captured["context_ids"], f"hybrid id not in contexts: {captured['context_ids']}"
-    assert "2" in captured["context_ids"], f"crossref id not in contexts: {captured['context_ids']}"
-
-
 def test_chat_verifies_citations_before_persisting(fake_session, monkeypatch) -> None:
     monkeypatch.setattr(chat_service, "list_recent_messages", lambda *_, **__: [])
     monkeypatch.setattr(chat_service, "list_case_facts", lambda *_: [])
@@ -462,7 +409,6 @@ def test_chat_verifies_citations_before_persisting(fake_session, monkeypatch) ->
     monkeypatch.setattr(chat_service, "get_session", lambda *_: FakeS())
     monkeypatch.setattr(chat_service, "hybrid_search", lambda *_, **__: [])
     monkeypatch.setattr(chat_service, "multi_query_expand", lambda q, n_variants=2: [q])
-    monkeypatch.setattr(chat_service, "walk_relationships", lambda *_, **__: [])
 
     captured = {}
     def fake_verify(structured, contexts):

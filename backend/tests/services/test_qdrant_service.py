@@ -1,5 +1,7 @@
 from unittest.mock import MagicMock, patch
 
+from uuid import NAMESPACE_URL, uuid5
+
 
 class FakeResponse:
     def __init__(self, json_data: dict, status_code: int = 200):
@@ -35,6 +37,8 @@ class FakeHttpClient:
 def make_embed_response(values: list[float]) -> FakeResponse:
     return FakeResponse({"embeddings": [values]})
 
+
+# ─── embed_texts tests (kept, unchanged) ───────────────────────────────────────
 
 def test_embed_texts_calls_ollama_with_configured_model() -> None:
     from services.qdrant_service import embed_texts
@@ -111,396 +115,129 @@ def test_embed_texts_retries_with_ascii_normalized_text_after_500() -> None:
     assert "Chuong 17" in fake_client.calls[1]["json"]["input"]
 
 
-def test_clean_html_text_strips_tags_and_keeps_vietnamese_text() -> None:
-    from services.qdrant_service import clean_html_text
+# ─── ingest_articles: full-field payload tests ─────────────────────────────────
 
-    html = "<html><body><h1>Điều 1</h1><p>Phạm vi điều chỉnh.</p></body></html>"
+def test_ingest_articles_preserves_all_phapdien_moj_fields() -> None:
+    from services.qdrant_service import ingest_articles
 
-    assert clean_html_text(html) == "Điều 1\n\nPhạm vi điều chỉnh."
-
-
-def test_split_document_chunks_respects_max_length() -> None:
-    from services.qdrant_service import split_document_chunks
-
-    text = "\n\n".join([
-        "Đoạn 1 " * 40,
-        "Đoạn 2 " * 40,
-        "Đoạn 3 " * 40,
-    ])
-
-    chunks = split_document_chunks(text, max_chars=300)
-
-    assert len(chunks) >= 2
-    assert all(len(chunk) <= 300 for chunk in chunks)
-    assert all(chunk.strip() for chunk in chunks)
-
-
-def test_search_legal_context_returns_vbpl_fields() -> None:
-    from services.qdrant_service import search_legal_context
-
-    mock_point = MagicMock()
-    mock_point.payload = {
-        "content_text": "Khoản 1. Nội dung được làm sạch.",
-        "title": "Thông tư số 01/2026/TT-BTP",
-        "source_url": "https://vbpl.vn/TW/Pages/vbpq-toanvan.aspx?ItemID=123",
-        "doc_id": "123",
-        "chunk_index": 0,
-        "loai_van_ban": "Thông tư",
-        "co_quan_ban_hanh": "Bộ Tư pháp",
-        "tinh_trang_hieu_luc": "Còn hiệu lực",
-        "chapter_label": None,
-        "article_label": None,
-        "chunk_level": "paragraph",
-        "total_chunks": None,
+    row = {
+        "id": "0100100000000000100000100000000000000000",
+        "article_anchor": "#0100100000000000100000100000000000000000",
+        "article_title": "Điều 1.1.LQ.1. Phạm vi điều chỉnh",
+        "content_text": "Luật này quy định về chính sách an ninh quốc gia.",
+        "content_char_len": 65,
+        "content_word_count": 14,
+        "chapter_title": "Chương I - NHỮNG QUY ĐỊNH CHUNG",
+        "subject_id": "55323c64-e78f-4537-afcd-6a3c2af3c71d",
+        "subject_number": 1,
+        "subject_title": "An ninh quốc gia",
+        "topic_id": "c3b69131-2931-4f67-926e-b244e18e8081",
+        "topic_number": 1,
+        "topic_title": "An ninh quốc gia",
+        "source_note_text": "(Điều 1 Luật số 32/2004/QH11)",
+        "source_links": [{"text": "link", "href": "http://vbpl.vn/x"}],
+        "related_note_text": "Liên quan đến Điều 1.12.LQ.11",
+        "source_url": "https://phapdien.moj.gov.vn/TraCuuPhapDien/ViewBoPD.aspx?obj=&demucid=55323c64",
+        "scraped_at": "2026-05-08T15:49:05+00:00",
     }
-    mock_point.score = 0.95
-
-    mock_response = MagicMock()
-    mock_response.points = [mock_point]
 
     with patch("services.qdrant_service.get_qdrant_client") as mock_get_client:
         mock_client = MagicMock()
-        mock_client.query_points.return_value = mock_response
         mock_get_client.return_value = mock_client
 
         with patch("services.qdrant_service.embed_texts") as mock_embed:
             mock_embed.return_value = [[0.1] * 1024]
-            results = search_legal_context(message="Thông tư về hộ tịch")
+            ingest_articles([row])
 
-    assert results == [{
-        "content_text": "Khoản 1. Nội dung được làm sạch.",
-        "title": "Thông tư số 01/2026/TT-BTP",
-        "source_url": "https://vbpl.vn/TW/Pages/vbpq-toanvan.aspx?ItemID=123",
-        "doc_id": "123",
-        "chunk_index": 0,
-        "loai_van_ban": "Thông tư",
-        "co_quan_ban_hanh": "Bộ Tư pháp",
-        "tinh_trang_hieu_luc": "Còn hiệu lực",
-        "chapter_label": None,
-        "article_label": None,
-        "chunk_level": "paragraph",
-        "total_chunks": None,
-        "relationships": [],
-        "score": 0.95,
-    }]
+    point = mock_client.upsert.call_args.kwargs["points"][0]
+    payload = point.payload
 
+    # All 17 source fields must be present with exact same value
+    for key, expected in row.items():
+        if key == "id":
+            continue  # id is the qdrant uuid, not payload
+        assert payload.get(key) == expected, f"Missing or wrong payload[{key!r}]"
 
-def test_search_with_loai_van_ban_filter_passes_filter_to_qdrant() -> None:
-    from services.qdrant_service import search_legal_context
-
-    mock_response = MagicMock()
-    mock_response.points = []
-
-    with patch("services.qdrant_service.get_qdrant_client") as mock_get_client:
-        mock_client = MagicMock()
-        mock_client.query_points.return_value = mock_response
-        mock_get_client.return_value = mock_client
-
-        with patch("services.qdrant_service.embed_texts") as mock_embed:
-            mock_embed.return_value = [[0.2] * 1024]
-            search_legal_context(
-                message="Quy định về công chứng",
-                filters={"loai_van_ban": "Thông tư", "co_quan_ban_hanh": "Bộ Tư pháp"},
-                top_k=5,
-            )
-
-    qdrant_filter = mock_client.query_points.call_args.kwargs["query_filter"]
-    assert qdrant_filter is not None
-    assert len(qdrant_filter.must) == 2
-    assert mock_client.query_points.call_args.kwargs["limit"] == 5
+    # No synthetic chunk_* / *_label / relationships / doc_id / title-alias
+    for forbidden in ("chunk_index", "total_chunks", "chunk_level",
+                      "chapter_label", "article_label", "khoan_label",
+                      "title", "relationships", "doc_id",
+                      "so_ky_hieu", "loai_van_ban", "co_quan_ban_hanh",
+                      "tinh_trang_hieu_luc", "linh_vuc", "nganh"):
+        assert forbidden not in payload, f"Forbidden field {forbidden!r} in payload"
 
 
-def test_ingest_articles_stores_vbpl_chunk_payload() -> None:
+def test_ingest_articles_id_is_deterministic_uuid5() -> None:
     from services.qdrant_service import ingest_articles
 
-    article = {
-        "id": "123:0",
-        "doc_id": "123",
-        "chunk_index": 0,
-        "content_text": "Khoản 1. Quy định thử nghiệm.",
-        "title": "Thông tư số 01/2026/TT-BTP",
-        "so_ky_hieu": "01/2026/TT-BTP",
-        "loai_van_ban": "Thông tư",
-        "co_quan_ban_hanh": "Bộ Tư pháp",
-        "tinh_trang_hieu_luc": "Còn hiệu lực",
-        "linh_vuc": "Hộ tịch",
-        "nganh": "Tư pháp",
-        "source_url": "https://vbpl.vn/TW/Pages/vbpq-toanvan.aspx?ItemID=123",
+    row = {
+        "id": "0100100000000000100000100000000000000000",
+        "article_anchor": "#0100100000000000100000100000000000000000",
+        "article_title": "Điều 1. Phạm vi",
+        "content_text": "Nội dung",
+        "source_url": "https://phapdien.moj.gov.vn/x",
     }
 
     with patch("services.qdrant_service.get_qdrant_client") as mock_get_client:
         mock_client = MagicMock()
         mock_get_client.return_value = mock_client
-
         with patch("services.qdrant_service.embed_texts") as mock_embed:
-            mock_embed.return_value = [[0.2] * 1024]
-            ingest_articles([article])
+            mock_embed.return_value = [[0.1] * 1024]
+            ingest_articles([row])
 
-    point = mock_client.upsert.call_args.kwargs["points"][0]
-    assert point.payload["title"] == "Thông tư số 01/2026/TT-BTP"
-    assert point.payload["doc_id"] == "123"
-    assert point.payload["chunk_index"] == 0
-    assert point.payload["loai_van_ban"] == "Thông tư"
+    expected_id = str(uuid5(NAMESPACE_URL, f"phapdien:{row['article_anchor'].lstrip('#')}"))
+    assert str(mock_client.upsert.call_args.kwargs["points"][0].id) == expected_id
 
 
 def test_ingest_articles_calls_embed_with_documents() -> None:
     from services.qdrant_service import ingest_articles
 
-    article = {
-        "id": "123:0",
-        "doc_id": "123",
-        "chunk_index": 0,
+    row = {
+        "id": "abc",
+        "article_anchor": "#abc",
+        "article_title": "Điều 1",
         "content_text": "Quy định về ly hôn",
-        "title": "Thông tư số 01/2026/TT-BTP",
-        "so_ky_hieu": "01/2026/TT-BTP",
-        "loai_van_ban": "Thông tư",
-        "co_quan_ban_hanh": "Bộ Tư pháp",
-        "tinh_trang_hieu_luc": "Còn hiệu lực",
-        "linh_vuc": "Hôn nhân",
-        "nganh": "Tư pháp",
-        "source_url": "https://vbpl.vn/TW/Pages/vbpq-toanvan.aspx?ItemID=123",
+        "source_url": "https://phapdien.moj.gov.vn/x",
     }
 
     with patch("services.qdrant_service.get_qdrant_client") as mock_get_client:
         mock_client = MagicMock()
         mock_get_client.return_value = mock_client
-
         with patch("services.qdrant_service.embed_texts") as mock_embed:
             mock_embed.return_value = [[0.2] * 1024]
-            ingest_articles([article])
+            ingest_articles([row])
 
     args, kwargs = mock_embed.call_args
     texts = args[0] if args else kwargs.get("texts")
     assert texts == ["Quy định về ly hôn"]
 
 
-def test_detect_doc_format_returns_law_for_repeated_dieu_markers() -> None:
-    from services.qdrant_service import detect_doc_format
+# ─── search_legal_context: 5-field return shape ──────────────────────────────
 
-    text = "\n\n".join([
-        "Chương I\nNhững quy định chung",
-        "Điều 1. Phạm vi điều chỉnh",
-        "Điều 2. Đối tượng áp dụng",
-        "Điều 3. Giải thích từ ngữ",
-    ])
-
-    assert detect_doc_format(text) == "law"
-
-
-def test_detect_doc_format_returns_decision_for_decision_style_text() -> None:
-    from services.qdrant_service import detect_doc_format
-
-    text = "\n\n".join([
-        "ỦY BAN NHÂN DÂN TỈNH X",
-        "QUYẾT ĐỊNH",
-        "Về việc ban hành Quy chế phối hợp liên ngành",
-        "Điều 1. Ban hành kèm theo Quyết định này Quy chế phối hợp liên ngành.",
-        "Điều 2. Chánh Văn phòng Ủy ban nhân dân tỉnh chịu trách nhiệm thi hành Quyết định này.",
-    ])
-
-    assert detect_doc_format(text) == "decision"
-
-
-def test_split_legal_chunks_preserves_chapter_and_article_labels() -> None:
-    from services.qdrant_service import split_legal_chunks
-
-    text = "\n\n".join([
-        "Chương I",
-        "Những quy định chung",
-        "Điều 1. Phạm vi điều chỉnh\nKhoản 1. Văn bản này quy định phạm vi điều chỉnh.",
-        "Điều 2. Đối tượng áp dụng\nKhoản 1. Văn bản này áp dụng với cơ quan, tổ chức, cá nhân.",
-    ])
-
-    chunks = split_legal_chunks(text, max_chars=120)
-
-    # With khoan-aware splitting, we get khoan-level chunks
-    assert len(chunks) == 2
-    assert chunks[0]["chunk_level"] in ("khoan", "sub_khoan")
-    assert chunks[0]["chapter_label"] == "Chương I"
-    assert chunks[0]["article_label"] == "Điều 1"
-    assert chunks[0]["khoan_label"] == "1"
-    assert "Điều 1. Phạm vi điều chỉnh" in chunks[0]["content_text"]
-    assert chunks[1]["chapter_label"] == "Chương I"
-    assert chunks[1]["article_label"] == "Điều 2"
-    assert chunks[1]["khoan_label"] == "1"
-    assert all("total_chunks" not in chunk for chunk in chunks)
-
-
-def test_split_legal_chunks_sub_splits_only_within_one_article() -> None:
-    from services.qdrant_service import split_legal_chunks
-
-    article_1 = "\n".join([
-        "Điều 1. Phạm vi điều chỉnh",
-        "Khoản 1. " + ("Nội dung của điều một. " * 20),
-        "Khoản 2. " + ("Tiếp tục quy định trong cùng điều. " * 20),
-        "Khoản 3. " + ("Phần cuối của điều một. " * 20),
-    ])
-    article_2 = "Điều 2. Hiệu lực thi hành\nKhoản 1. Văn bản này có hiệu lực kể từ ngày ban hành."
-    text = f"Chương I\nNhững quy định chung\n\n{article_1}\n\n{article_2}"
-
-    chunks = split_legal_chunks(text, max_chars=240)
-
-    dieu_1_chunks = [chunk for chunk in chunks if chunk["article_label"] == "Điều 1"]
-    dieu_2_chunks = [chunk for chunk in chunks if chunk["article_label"] == "Điều 2"]
-
-    # With khoan-aware splitting, chunks are split by khoan boundaries
-    assert len(dieu_1_chunks) >= 2
-    assert all(chunk["chunk_level"] in ("khoan", "sub_khoan", "sub_article") for chunk in dieu_1_chunks)
-    assert all("Điều 2. Hiệu lực thi hành" not in chunk["content_text"] for chunk in dieu_1_chunks)
-    assert len(dieu_2_chunks) == 1
-    assert dieu_2_chunks[0]["chunk_level"] in ("khoan", "article", "sub_article")
-    assert "Điều 2. Hiệu lực thi hành" in dieu_2_chunks[0]["content_text"]
-    assert all("total_chunks" not in chunk for chunk in chunks)
-
-
-def test_split_legal_chunks_falls_back_to_paragraph_mode_for_decisions() -> None:
-    from services.qdrant_service import split_legal_chunks
-
-    text = "\n\n".join([
-        "ỦY BAN NHÂN DÂN TỈNH X",
-        "QUYẾT ĐỊNH",
-        "Về việc ban hành Quy chế phối hợp liên ngành",
-        "Điều 1. Ban hành kèm theo Quyết định này Quy chế phối hợp liên ngành.",
-        "Điều 2. Chánh Văn phòng Ủy ban nhân dân tỉnh chịu trách nhiệm thi hành Quyết định này.",
-    ])
-
-    chunks = split_legal_chunks(text, max_chars=80)
-
-    assert len(chunks) >= 2
-    assert all(chunk["chunk_level"] == "paragraph" for chunk in chunks)
-    assert all(chunk["chapter_label"] is None for chunk in chunks)
-    assert all(chunk["article_label"] is None for chunk in chunks)
-    first_chunk_text = chunks[0]["content_text"]
-    assert "ỦY BAN NHÂN DÂN TỈNH X" in first_chunk_text
-    assert "QUYẾT ĐỊNH" in first_chunk_text
-
-
-def test_ingest_articles_stores_legal_structure_metadata_on_payload() -> None:
-    from services.qdrant_service import ingest_articles
-
-    article = {
-        "id": "123:0",
-        "doc_id": "123",
-        "chunk_index": 0,
-        "total_chunks": 3,
-        "chunk_level": "sub_article",
-        "chapter_label": "Chương I",
-        "article_label": "Điều 1",
-        "content_text": "Điều 1. Phạm vi điều chỉnh\nKhoản 1. Quy định thử nghiệm.",
-        "title": "Thông tư số 01/2026/TT-BTP",
-        "so_ky_hieu": "01/2026/TT-BTP",
-        "loai_van_ban": "Thông tư",
-        "co_quan_ban_hanh": "Bộ Tư pháp",
-        "tinh_trang_hieu_luc": "Còn hiệu lực",
-        "linh_vuc": "Hộ tịch",
-        "nganh": "Tư pháp",
-        "source_url": "https://vbpl.vn/TW/Pages/vbpq-toanvan.aspx?ItemID=123",
-    }
-
-    with patch("services.qdrant_service.get_qdrant_client") as mock_get_client:
-        mock_client = MagicMock()
-        mock_get_client.return_value = mock_client
-
-        with patch("services.qdrant_service.embed_texts") as mock_embed:
-            mock_embed.return_value = [[0.2] * 1024]
-            ingest_articles([article])
-
-    point = mock_client.upsert.call_args.kwargs["points"][0]
-    assert point.payload["chunk_level"] == "sub_article"
-    assert point.payload["chapter_label"] == "Chương I"
-    assert point.payload["article_label"] == "Điều 1"
-    assert point.payload["total_chunks"] == 3
-
-
-def test_ingest_articles_stores_relationships_in_payload() -> None:
-    from services.qdrant_service import ingest_articles
-
-    article = {
-        "id": "123:0",
-        "doc_id": "123",
-        "chunk_index": 0,
-        "content_text": "Khoản 1. Quy định thử nghiệm.",
-        "title": "Thông tư số 01/2026/TT-BTP",
-        "so_ky_hieu": "01/2026/TT-BTP",
-        "loai_van_ban": "Thông tư",
-        "co_quan_ban_hanh": "Bộ Tư pháp",
-        "tinh_trang_hieu_luc": "Còn hiệu lực",
-        "linh_vuc": "Hộ tịch",
-        "nganh": "Tư pháp",
-        "source_url": "https://vbpl.vn/TW/Pages/vbpq-toanvan.aspx?ItemID=123",
-        "relationships": [
-            {"other_doc_id": "456", "relationship": "sửa đổi"},
-            {"other_doc_id": "789", "relationship": "bãi bỏ"},
-        ],
-    }
-
-    with patch("services.qdrant_service.get_qdrant_client") as mock_get_client:
-        mock_client = MagicMock()
-        mock_get_client.return_value = mock_client
-
-        with patch("services.qdrant_service.embed_texts") as mock_embed:
-            mock_embed.return_value = [[0.2] * 1024]
-            ingest_articles([article])
-
-    point = mock_client.upsert.call_args.kwargs["points"][0]
-    assert point.payload["relationships"] == [
-        {"other_doc_id": "456", "relationship": "sửa đổi"},
-        {"other_doc_id": "789", "relationship": "bãi bỏ"},
-    ]
-
-
-def test_ingest_articles_stores_empty_relationships_when_missing() -> None:
-    from services.qdrant_service import ingest_articles
-
-    article = {
-        "id": "123:0",
-        "doc_id": "123",
-        "chunk_index": 0,
-        "content_text": "Khoản 1. Quy định thử nghiệm.",
-        "title": "Thông tư số 01/2026/TT-BTP",
-        "so_ky_hieu": "01/2026/TT-BTP",
-        "loai_van_ban": "Thông tư",
-        "co_quan_ban_hanh": "Bộ Tư pháp",
-        "tinh_trang_hieu_luc": "Còn hiệu lực",
-        "linh_vuc": "Hộ tịch",
-        "nganh": "Tư pháp",
-        "source_url": "https://vbpl.vn/TW/Pages/vbpq-toanvan.aspx?ItemID=123",
-    }
-
-    with patch("services.qdrant_service.get_qdrant_client") as mock_get_client:
-        mock_client = MagicMock()
-        mock_get_client.return_value = mock_client
-
-        with patch("services.qdrant_service.embed_texts") as mock_embed:
-            mock_embed.return_value = [[0.2] * 1024]
-            ingest_articles([article])
-
-    point = mock_client.upsert.call_args.kwargs["points"][0]
-    assert point.payload["relationships"] == []
-
-
-def test_search_legal_context_returns_relationships() -> None:
+def test_search_legal_context_returns_only_consumed_fields() -> None:
     from services.qdrant_service import search_legal_context
 
     mock_point = MagicMock()
+    mock_point.id = "uuid-1"
     mock_point.payload = {
-        "content_text": "Điều 1. Nội dung được làm sạch.",
-        "title": "Luật mẫu",
-        "source_url": "https://vbpl.vn/TW/Pages/vbpq-toanvan.aspx?ItemID=123",
-        "doc_id": "123",
-        "chunk_index": 0,
-        "chunk_level": "article",
-        "chapter_label": "Chương I",
-        "article_label": "Điều 1",
-        "total_chunks": 5,
-        "loai_van_ban": "Luật",
-        "co_quan_ban_hanh": "Quốc hội",
-        "tinh_trang_hieu_luc": "Còn hiệu lực",
-        "relationships": [
-            {"other_doc_id": "456", "relationship": "sửa đổi"},
-        ],
+        "content_text": "Luật này quy định...",
+        "article_title": "Điều 1. Phạm vi",
+        "source_url": "https://phapdien.moj.gov.vn/x",
+        # The rest of the 17 fields are present in Qdrant but not exposed:
+        "article_anchor": "#01001",
+        "chapter_title": "Chương I",
+        "subject_title": "An ninh quốc gia",
+        "topic_title": "An ninh quốc gia",
+        "scraped_at": "2026-05-08T15:49:05+00:00",
+        "subject_id": "uuid-x",
+        "topic_id": "uuid-y",
+        "source_note_text": "...",
+        "related_note_text": "...",
+        "source_links": [{"text": "t", "href": "h"}],
+        "content_char_len": 50,
+        "content_word_count": 10,
     }
-    mock_point.score = 0.91
+    mock_point.score = 0.9
 
     mock_response = MagicMock()
     mock_response.points = [mock_point]
@@ -509,186 +246,15 @@ def test_search_legal_context_returns_relationships() -> None:
         mock_client = MagicMock()
         mock_client.query_points.return_value = mock_response
         mock_get_client.return_value = mock_client
-
         with patch("services.qdrant_service.embed_texts") as mock_embed:
             mock_embed.return_value = [[0.1] * 1024]
-            results = search_legal_context(message="Điều 1 luật mẫu")
+            results = search_legal_context(message="Phạm vi điều chỉnh")
 
-    assert results[0]["relationships"] == [{"other_doc_id": "456", "relationship": "sửa đổi"}]
-
-
-def test_search_legal_context_returns_empty_relationships_when_missing() -> None:
-    from services.qdrant_service import search_legal_context
-
-    mock_point = MagicMock()
-    mock_point.payload = {
-        "content_text": "Điều 1. Nội dung được làm sạch.",
-        "title": "Luật mẫu",
-        "source_url": "https://vbpl.vn/TW/Pages/vbpq-toanvan.aspx?ItemID=123",
-        "doc_id": "123",
-        "chunk_index": 0,
-        "chunk_level": "article",
-        "chapter_label": "Chương I",
-        "article_label": "Điều 1",
-        "total_chunks": 5,
-        "loai_van_ban": "Luật",
-        "co_quan_ban_hanh": "Quốc hội",
-        "tinh_trang_hieu_luc": "Còn hiệu lực",
-    }
-    mock_point.score = 0.91
-
-    mock_response = MagicMock()
-    mock_response.points = [mock_point]
-
-    with patch("services.qdrant_service.get_qdrant_client") as mock_get_client:
-        mock_client = MagicMock()
-        mock_client.query_points.return_value = mock_response
-        mock_get_client.return_value = mock_client
-
-        with patch("services.qdrant_service.embed_texts") as mock_embed:
-            mock_embed.return_value = [[0.1] * 1024]
-            results = search_legal_context(message="Điều 1 luật mẫu")
-
-    assert results[0]["relationships"] == []
-
-
-def test_search_legal_context_returns_legal_chunk_metadata_fields() -> None:
-    from services.qdrant_service import search_legal_context
-
-    mock_point = MagicMock()
-    mock_point.payload = {
-        "content_text": "Điều 1. Nội dung được làm sạch.",
-        "title": "Luật mẫu",
-        "source_url": "https://vbpl.vn/TW/Pages/vbpq-toanvan.aspx?ItemID=123",
-        "doc_id": "123",
-        "chunk_index": 0,
-        "chunk_level": "article",
-        "chapter_label": "Chương I",
-        "article_label": "Điều 1",
-        "total_chunks": 5,
-        "loai_van_ban": "Luật",
-        "co_quan_ban_hanh": "Quốc hội",
-        "tinh_trang_hieu_luc": "Còn hiệu lực",
-    }
-    mock_point.score = 0.91
-
-    mock_response = MagicMock()
-    mock_response.points = [mock_point]
-
-    with patch("services.qdrant_service.get_qdrant_client") as mock_get_client:
-        mock_client = MagicMock()
-        mock_client.query_points.return_value = mock_response
-        mock_get_client.return_value = mock_client
-
-        with patch("services.qdrant_service.embed_texts") as mock_embed:
-            mock_embed.return_value = [[0.1] * 1024]
-            results = search_legal_context(message="Điều 1 luật mẫu")
-
-    assert results == [{
-        "content_text": "Điều 1. Nội dung được làm sạch.",
-        "title": "Luật mẫu",
-        "source_url": "https://vbpl.vn/TW/Pages/vbpq-toanvan.aspx?ItemID=123",
-        "doc_id": "123",
-        "chunk_index": 0,
-        "chunk_level": "article",
-        "chapter_label": "Chương I",
-        "article_label": "Điều 1",
-        "total_chunks": 5,
-        "loai_van_ban": "Luật",
-        "co_quan_ban_hanh": "Quốc hội",
-        "tinh_trang_hieu_luc": "Còn hiệu lực",
-        "relationships": [],
-        "score": 0.91,
-    }]
-
-
-def test_html_parser_extracts_headings():
-    from services.qdrant_service import HTMLLegalParser
-    html = """
-    <html><body>
-        <h1>CHƯƠNG I: NHỮNG QUY ĐỊNH CHUNG</h1>
-        <p>Some content here</p>
-        <h2>Điều 1. Phạm vi điều chỉnh</h2>
-        <p>Nội dung điều 1 khoản 1.</p>
-        <p>Nội dung điều 1 khoản 2.</p>
-    </body></html>
-    """
-    parser = HTMLLegalParser()
-    result = parser.parse(html)
-    assert len(result['headings']) == 2
-    assert result['headings'][0]['text'] == "CHƯƠNG I: NHỮNG QUY ĐỊNH CHUNG"
-    assert result['headings'][0]['level'] == 1
-    assert result['headings'][1]['text'] == "Điều 1. Phạm vi điều chỉnh"
-    assert result['headings'][1]['level'] == 2
-
-
-def test_html_parser_extracts_paragraphs():
-    from services.qdrant_service import HTMLLegalParser
-    html = "<p>Para 1</p><p>Para 2</p><div>Div content</div>"
-    parser = HTMLLegalParser()
-    result = parser.parse(html)
-    assert len(result['paragraphs']) >= 2
-
-
-def test_html_parser_preserves_semantic_structure():
-    from services.qdrant_service import HTMLLegalParser
-    html = """
-    <h1>Chương I</h1>
-    <h2>Điều 1.</h2>
-    <p>Khoản 1. Nội dung khoản 1.</p>
-    <p>Khoản 2. Nội dung khoản 2.</p>
-    """
-    parser = HTMLLegalParser()
-    result = parser.parse(html)
-    assert len(result['chapters']) == 1
-    assert len(result['articles']) == 1
-    assert len(result['khoans']) == 2
-
-
-def test_split_legal_chunks_respects_khoan():
-    from services.qdrant_service import split_legal_chunks
-
-    text = """Chương I
-Điều 1. Nội dung chính
-Khoản 1. Phần mở đầu của điều này phải được hiểu theo nghĩa rộng bao gồm nhiều trường hợp khác nhau.
-Khoản 2. Phần tiếp theo nói về quyền và nghĩa vụ của các bên liên quan trong quan hệ pháp luật.
-Điều 2. Nội dung bổ sung"""
-
-    chunks = split_legal_chunks(text, max_chars=300)
-    assert len(chunks) >= 2
-    for chunk in chunks:
-        if chunk.get("chunk_level") in ("khoan", "sub_khoan"):
-            assert "Khoản" in str(chunk) or chunk.get("khoan_label")
-
-
-def test_split_legal_chunks_long_article():
-    from services.qdrant_service import split_legal_chunks
-
-    text = "Điều 1. Title\n" + ("x" * 200 + "\n\n") * 20
-
-    chunks = split_legal_chunks(text, max_chars=500)
-    for chunk in chunks:
-        if chunk.get("chunk_level") in ("sub_article", "sub_khoan"):
-            assert len(chunk["content_text"]) <= 500
-
-
-def test_split_legal_chunks_preserves_metadata():
-    from services.qdrant_service import split_legal_chunks
-
-    text = """CHƯƠNG II: TỔ CHỨC VÀ HOẠT ĐỘNG
-Điều 10. Thẩm quyền
-Nội dung điều 10 rất dài. """ + ("x" * 500)
-
-    chunks = split_legal_chunks(text, max_chars=300)
-    has_chapter_label = any(c.get("chapter_label") for c in chunks)
-    assert has_chapter_label, "Should preserve chapter labels"
-
-
-def test_split_legal_chunks_handles_decision_format():
-    from services.qdrant_service import split_legal_chunks
-
-    # Decision format without articles
-    text = "Quyết định số 123/2020\n\n" + ("Paragraph " + "x" * 100 + "\n\n") * 10
-
-    chunks = split_legal_chunks(text, max_chars=400)
-    assert len(chunks) > 0
+    assert len(results) == 1
+    r = results[0]
+    # Exactly these 5 keys, nothing else
+    assert set(r.keys()) == {"id", "content_text", "title", "source_url", "score"}
+    assert r["id"] == "uuid-1"
+    assert r["title"] == "Điều 1. Phạm vi"
+    assert r["source_url"] == "https://phapdien.moj.gov.vn/x"
+    assert r["score"] == 0.9
