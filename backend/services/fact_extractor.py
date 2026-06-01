@@ -1,3 +1,4 @@
+"""LLM-based fact extraction from user messages (placeholder for Task 2.4 integration)."""
 import json
 import logging
 import re
