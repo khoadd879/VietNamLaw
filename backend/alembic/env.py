@@ -7,9 +7,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from db.base import Base
-from entities.user import User
+from entities.case_fact import CaseFact
 from entities.chat_session import ChatSession
 from entities.chat_message import ChatMessage
+from entities.user import User
 
 config = context.config
 
