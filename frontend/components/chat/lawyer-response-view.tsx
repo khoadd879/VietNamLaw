@@ -12,13 +12,19 @@ interface LawyerResponseViewProps {
   onSelectFollowUp?: (q: string) => void
 }
 
+// LLM occasionally returns a single string instead of an array for list fields
+// (especially when the response is short and there's only one item). The ?? []
+// fallback only triggers on null/undefined, so we must also guard against
+// wrong-typed values to keep .map() from throwing at runtime.
+function ensureArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : []
+}
+
 export function LawyerResponseView({ section, sources, onSelectFollowUp }: LawyerResponseViewProps) {
-  // Defensive: backend/JSON path can drop fields if the LLM returns a partial
-  // response. Fall back to empty values so we never crash on undefined.length.
-  const phuongAn = section.phuong_an_khuyen_nghi ?? []
-  const ruiRo = section.rui_ro_can_luu_y ?? []
-  const cauHoi = section.cau_hoi_hoi_them ?? []
-  const trichDan = section.trich_dan_nguon ?? []
+  const phuongAn = ensureArray<string>(section.phuong_an_khuyen_nghi)
+  const ruiRo = ensureArray<string>(section.rui_ro_can_luu_y)
+  const cauHoi = ensureArray<string>(section.cau_hoi_hoi_them)
+  const trichDan = ensureArray<string>(section.trich_dan_nguon)
 
   const hasAny =
     section.loi_chao ||
