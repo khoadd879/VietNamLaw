@@ -1,7 +1,14 @@
 import os
+from pathlib import Path
+
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load .env from the backend directory (where this file lives) regardless of CWD.
+# Without an explicit path, load_dotenv() looks in CWD — which means running
+# `uvicorn main:app --reload` from the repo root silently fails to find
+# backend/.env, leaving NEON_DATABASE_URL empty.
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(_BACKEND_DIR / ".env")
 
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
