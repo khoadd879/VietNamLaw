@@ -1,7 +1,9 @@
 import logging
 
-from services.groq_service import generate_answer
-from services.qdrant_service import search_legal_context
+from services.crossref_walker import walk_relationships
+from services.hybrid_search import hybrid_search
+from services.multi_query import expand_query as multi_query_expand
+from services.citation_verifier import verify_citations
 from services.session_service import (
     add_fact,
     get_session,
@@ -11,12 +13,12 @@ from services.session_service import (
 )
 from services.two_stage_reasoner import two_stage_reason
 from repositories.messages import list_recent_messages
+from core.config import MULTI_QUERY_COUNT, RETRIEVAL_TOP_K
 
 logger = logging.getLogger(__name__)
 
 HISTORY_LIMIT = 10
-RETRIEVAL_TOP_K = 4
-LOW_SCORE_THRESHOLD = 0.55
+LOW_SCORE_THRESHOLD = 0.30  # hybrid scores are normalized 0-1, so 0.30 is low
 
 
 def _format_history_for_llm(messages) -> list[dict]:
@@ -56,13 +58,28 @@ def _is_retrieval_reliable(contexts: list[dict]) -> bool:
     return True
 
 
-def _persist_extracted_facts(
-    db,
-    session_id: str,
-    user_id: str,
-    source_message_id: str,
-    extracted: dict,
-) -> None:
+def _multi_query_retrieve(
+    message: str,
+    filters: dict | None,
+    top_k: int,
+) -> list[dict]:
+    """Run multi-query expansion + hybrid search, then dedupe and merge."""
+    queries = multi_query_expand(message, n_variants=MULTI_QUERY_COUNT)
+    logger.info("multi_query: %d variants for session", len(queries))
+    seen: dict[str, dict] = {}
+    for q in queries:
+        for chunk in hybrid_search(q, filters=filters, top_k=top_k):
+            cid = chunk.get("id") or chunk.get("doc_id")
+            if cid is None:
+                continue
+            if cid not in seen or chunk.get("score", 0) > seen[cid].get("score", 0):
+                seen[cid] = chunk
+    merged = list(seen.values())
+    merged.sort(key=lambda c: c.get("score", 0), reverse=True)
+    return merged[:top_k]
+
+
+def _persist_extracted_facts(db, session_id, user_id, source_message_id, extracted):
     for fact in extracted.get("extracted_facts", []) or []:
         if not fact.get("key") or fact.get("value") is None:
             continue
@@ -77,89 +94,72 @@ def _persist_extracted_facts(
         )
 
 
-def _persist_case_update(
-    db,
-    session_id: str,
-    user_id: str,
-    case_type: str | None,
-    case_summary: str | None,
-    *,
-    mark_intake_complete: bool = False,
-) -> None:
+def _persist_case_update(db, session_id, user_id, case_type, case_summary, *, mark_intake_complete=False):
     from datetime import datetime, timezone
     update_session_case(
-        db,
-        session_id=session_id,
-        user_id=user_id,
-        case_type=case_type,
-        case_summary=case_summary,
+        db, session_id=session_id, user_id=user_id,
+        case_type=case_type, case_summary=case_summary,
         conversation_phase="consulting" if mark_intake_complete else None,
         intake_completed_at=datetime.now(timezone.utc) if mark_intake_complete else None,
     )
 
 
-def send_chat_message(
-    db,
-    session_id: str,
-    user_id: str,
-    message: str,
-) -> tuple[str, list[str], dict | None, dict | None]:
-    """Main chat entry point.
-
-    Returns (display_text, sources, structured, case_brief).
-    """
+def send_chat_message(db, session_id, user_id, message) -> tuple[str, list[str], dict | None, dict | None]:
     session = get_session(db, session_id, user_id)
     if session is None:
         raise ValueError("Session not found")
 
-    # 1. Persist user turn first
     user_msg = save_message(db, session_id, user_id, "user", message)
 
-    # 2. Load recent history
     recent = list_recent_messages(db, session_id, limit=HISTORY_LIMIT)
     history = _format_history_for_llm(recent[:-1])
 
-    # 3. Load existing case facts
     existing_facts = list_case_facts(db, session_id)
 
-    # 4. Retrieve legal context
-    contexts = search_legal_context(message, top_k=RETRIEVAL_TOP_K)
+    # SPRINT 3: hybrid + multi-query retrieval
+    contexts = _multi_query_retrieve(message, filters=None, top_k=RETRIEVAL_TOP_K)
+
+    # SPRINT 3: cross-ref walker
+    if contexts:
+        related = walk_relationships(contexts)
+        # Dedupe against existing contexts
+        seen_ids = {c.get("id") or c.get("doc_id") for c in contexts}
+        for r in related:
+            rid = r.get("id") or r.get("doc_id")
+            if rid and rid not in seen_ids:
+                contexts.append(r)
+                seen_ids.add(rid)
+
     if not _is_retrieval_reliable(contexts):
         logger.info("Retrieval unreliable for session=%s", session_id)
 
-    # 5. Two-stage reason
     try:
         result = two_stage_reason(
-            message=message,
-            contexts=contexts,
-            history=history,
+            message=message, contexts=contexts, history=history,
             existing_facts=existing_facts,
             case_type=getattr(session, "case_type", None),
             case_summary=getattr(session, "case_summary", None),
         )
     except ValueError as exc:
         logger.warning("Two-stage failed: %s", exc)
+        from services.groq_service import generate_answer
         text = generate_answer(question=message, contexts=contexts, history=history)
         save_message(db, session_id, user_id, "assistant", text, {"sources": []})
         return text, [], None, None
 
     structured = result["structured"]
-    extracted = result["extracted"]
 
-    # 6. Persist extracted facts
-    _persist_extracted_facts(db, session_id, user_id, user_msg.id, extracted)
+    # SPRINT 3: verify citations against retrieved contexts
+    structured = verify_citations(structured, contexts)
 
-    # 7. Persist case_type / case_summary update; mark intake complete if we got facts
+    _persist_extracted_facts(db, session_id, user_id, user_msg.id, result["extracted"])
     _persist_case_update(
-        db,
-        session_id,
-        user_id,
+        db, session_id, user_id,
         case_type=result.get("updated_case_type"),
         case_summary=result.get("updated_case_summary"),
-        mark_intake_complete=bool(extracted.get("extracted_facts")),
+        mark_intake_complete=bool(result["extracted"].get("extracted_facts")),
     )
 
-    # 8. Render display text
     display = _structured_to_display_text(structured)
     # Only surface sources the LLM actually cited. If trich_dan_nguon is empty
     # (e.g. retrieval was unreliable and the LLM correctly refused to invent
