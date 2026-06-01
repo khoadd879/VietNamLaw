@@ -38,13 +38,19 @@ def fake_session(monkeypatch):
     # Stub update_session_case
     monkeypatch.setattr(chat_service, "update_session_case", lambda *_, **__: object())
 
+    # Sprint 3: stub hybrid retrieval pipeline (can be overridden per-test)
+    monkeypatch.setattr(chat_service, "hybrid_search", lambda *_, **__: [])
+    monkeypatch.setattr(chat_service, "multi_query_expand", lambda q, n_variants=2: [q])
+    monkeypatch.setattr(chat_service, "walk_relationships", lambda *_, **__: [])
+    monkeypatch.setattr(chat_service, "verify_citations", lambda s, c: s)
+
     return db
 
 
 def test_send_chat_message_returns_structured_dict(fake_session, monkeypatch) -> None:
     monkeypatch.setattr(
-        chat_service, "search_legal_context",
-        lambda *_, **__: [{"content_text": "Điều 51", "title": "Luật HNGĐ", "source_url": "https://example/51"}],
+        chat_service, "hybrid_search",
+        lambda *_, **__: [{"id": "ctx1", "content_text": "Điều 51", "title": "Luật HNGĐ", "source_url": "https://example/51", "score": 0.9}],
     )
     saved = {"messages": []}
     def fake_save(db, *args, **kwargs):
@@ -82,19 +88,21 @@ def test_send_chat_message_returns_structured_dict(fake_session, monkeypatch) ->
 
 def test_send_chat_message_falls_back_to_text_when_structured_fails(fake_session, monkeypatch) -> None:
     monkeypatch.setattr(
-        chat_service, "search_legal_context",
-        lambda *_, **__: [{"content_text": "ctx", "title": "T", "source_url": "u"}],
+        chat_service, "hybrid_search",
+        lambda *_, **__: [{"id": "ctx1", "content_text": "ctx", "title": "T", "source_url": "u", "score": 0.9}],
     )
     monkeypatch.setattr(chat_service, "list_recent_messages", lambda *_, **__: [])
+    monkeypatch.setattr(chat_service, "save_message", lambda *_, **__: FakeMsg())
     monkeypatch.setattr(chat_service, "save_message", lambda *_, **__: FakeMsg())
 
     def raise_json(**kwargs):
         raise ValueError("bad json")
     monkeypatch.setattr(chat_service, "two_stage_reason", raise_json)
-    monkeypatch.setattr(
-        chat_service, "generate_answer",
-        lambda *_, **__: "Câu trả lời dạng text fallback.",
-    )
+    # generate_answer is dynamically imported inside send_chat_message except block,
+    # so patch at source module
+    import services.groq_service as groq_mod
+    monkeypatch.setattr(groq_mod, "generate_answer",
+        lambda **__: "Câu trả lời dạng text fallback.")
 
     reply, sources, structured, case_brief = send_chat_message(
         db=fake_session, session_id="s1", user_id="u1", message="q"
@@ -104,7 +112,7 @@ def test_send_chat_message_falls_back_to_text_when_structured_fails(fake_session
 
 
 def test_send_chat_message_returns_clarify_when_no_contexts(fake_session, monkeypatch) -> None:
-    monkeypatch.setattr(chat_service, "search_legal_context", lambda *_, **__: [])
+    monkeypatch.setattr(chat_service, "hybrid_search", lambda *_, **__: [])
     monkeypatch.setattr(chat_service, "list_recent_messages", lambda *_, **__: [])
     captured = {}
     def fake_two_stage(**kwargs):
@@ -136,8 +144,8 @@ def test_send_chat_message_returns_clarify_when_no_contexts(fake_session, monkey
 
 def test_send_chat_message_passes_history_to_llm(fake_session, monkeypatch) -> None:
     monkeypatch.setattr(
-        chat_service, "search_legal_context",
-        lambda *_, **__: [{"content_text": "ctx", "title": "T", "source_url": "u"}],
+        chat_service, "hybrid_search",
+        lambda *_, **__: [{"id": "ctx1", "content_text": "ctx", "title": "T", "source_url": "u", "score": 0.9}],
     )
     captured = {}
     def capture_history(**kwargs):
@@ -169,10 +177,10 @@ def test_send_chat_message_passes_history_to_llm(fake_session, monkeypatch) -> N
 def test_chat_returns_empty_sources_when_llm_does_not_cite(fake_session, monkeypatch) -> None:
     """When the LLM returns empty trich_dan_nguon, chat must NOT leak raw context URLs."""
     monkeypatch.setattr(
-        chat_service, "search_legal_context",
+        chat_service, "hybrid_search",
         lambda *_, **__: [
-            {"content_text": "ctx1", "title": "L1", "source_url": "https://phapdien/1"},
-            {"content_text": "ctx2", "title": "L2", "source_url": "https://phapdien/2"},
+            {"id": "ctx1", "content_text": "ctx1", "title": "L1", "source_url": "https://phapdien/1", "score": 0.9},
+            {"id": "ctx2", "content_text": "ctx2", "title": "L2", "source_url": "https://phapdien/2", "score": 0.9},
         ],
     )
     monkeypatch.setattr(chat_service, "list_recent_messages", lambda *_, **__: [])
@@ -206,9 +214,9 @@ def test_chat_returns_empty_sources_when_llm_does_not_cite(fake_session, monkeyp
 def test_chat_returns_sources_when_llm_cites(fake_session, monkeypatch) -> None:
     """When the LLM cites a specific article, the matching context URL is surfaced."""
     monkeypatch.setattr(
-        chat_service, "search_legal_context",
+        chat_service, "hybrid_search",
         lambda *_, **__: [
-            {"content_text": "Điều 51 quy định...", "title": "L1", "source_url": "https://phapdien/51"},
+            {"id": "ctx1", "content_text": "Điều 51 quy định...", "title": "L1", "source_url": "https://phapdien/51", "score": 0.9},
         ],
     )
     monkeypatch.setattr(chat_service, "list_recent_messages", lambda *_, **__: [])
@@ -240,7 +248,7 @@ def test_chat_returns_sources_when_llm_cites(fake_session, monkeypatch) -> None:
 
 
 def test_chat_persists_extracted_facts(fake_session, monkeypatch) -> None:
-    monkeypatch.setattr(chat_service, "search_legal_context", lambda *_, **__: [])
+    monkeypatch.setattr(chat_service, "hybrid_search", lambda *_, **__: [])
     monkeypatch.setattr(chat_service, "list_recent_messages", lambda *_, **__: [])
 
     extracted = {
@@ -283,7 +291,7 @@ def test_chat_persists_extracted_facts(fake_session, monkeypatch) -> None:
 
 
 def test_chat_skips_fact_persist_when_no_extraction(fake_session, monkeypatch) -> None:
-    monkeypatch.setattr(chat_service, "search_legal_context", lambda *_, **__: [])
+    monkeypatch.setattr(chat_service, "hybrid_search", lambda *_, **__: [])
     monkeypatch.setattr(chat_service, "list_recent_messages", lambda *_, **__: [])
     monkeypatch.setattr(
         chat_service, "two_stage_reason",
@@ -312,8 +320,7 @@ def test_chat_skips_fact_persist_when_no_extraction(fake_session, monkeypatch) -
 
 
 def test_chat_uses_existing_case_brief_in_two_stage(fake_session, monkeypatch) -> None:
-    monkeypatch.setattr(chat_service, "search_legal_context", lambda *_, **__: [])
-    monkeypatch.setattr(chat_service, "list_recent_messages", lambda *_, **__: [])
+    monkeypatch.setattr(chat_service, "hybrid_search", lambda *_, **__: [])
 
     class FakeFact:
         def __init__(self, k, v): self.fact_key, self.fact_value, self.confidence = k, v, 1.0
@@ -336,6 +343,7 @@ def test_chat_uses_existing_case_brief_in_two_stage(fake_session, monkeypatch) -
     monkeypatch.setattr(chat_service, "add_fact", lambda *_, **__: object())
     monkeypatch.setattr(chat_service, "update_session_case", lambda *_, **__: object())
     monkeypatch.setattr(chat_service, "save_message", lambda *_, **__: FakeMsg())
+    monkeypatch.setattr(chat_service, "list_recent_messages", lambda *_, **__: [])
 
     # Inject existing facts and case_type/case_summary on the session
     monkeypatch.setattr(chat_service, "list_case_facts", lambda *_, **__: [FakeFact("ngay_ket_hon", "2018")])
@@ -348,3 +356,166 @@ def test_chat_uses_existing_case_brief_in_two_stage(fake_session, monkeypatch) -
     send_chat_message(db=fake_session, session_id="s1", user_id="u1", message="thêm nữa tôi có con")
     assert captured["existing_facts_keys"] == ["ngay_ket_hon"]
     assert captured["case_type"] == "hôn nhân gia đình"
+
+
+# ─── Sprint 3 wiring tests ─────────────────────────────────────────────────────
+
+def test_chat_uses_hybrid_search_instead_of_pure_vector(fake_session, monkeypatch) -> None:
+    monkeypatch.setattr(chat_service, "list_recent_messages", lambda *_, **__: [])
+    monkeypatch.setattr(chat_service, "list_case_facts", lambda *_: [])
+    class FakeS:
+        case_type = None
+        case_summary = None
+    monkeypatch.setattr(chat_service, "get_session", lambda *_: FakeS())
+
+    captured = {}
+    def fake_hybrid(query, **kwargs):
+        captured["query"] = query
+        return [{"id": "1", "content_text": "Điều 51", "title": "Luật HNGĐ", "source_url": "u", "score": 0.9}]
+
+    monkeypatch.setattr(chat_service, "hybrid_search", fake_hybrid)
+    # multi_query_expand must return variant queries so hybrid_search gets called multiple times
+    def multi_expand(msg, n_variants=2):
+        return [msg, msg + " variant", msg + " variant 2"]
+    monkeypatch.setattr(chat_service, "multi_query_expand", multi_expand)
+    monkeypatch.setattr(chat_service, "walk_relationships", lambda chunks, **__: [])
+    monkeypatch.setattr(
+        chat_service, "two_stage_reason",
+        lambda **_: {
+            "structured": {
+                "loi_chao": "Chào", "tom_tat_vu_viec": "ok", "phan_tich_phap_ly": "ok",
+                "phuong_an_khuyen_nghi": [], "rui_ro_can_luu_y": [],
+                "cau_hoi_hoi_them": [], "disclaimer": "ok",
+                "trich_dan_nguon": ["Điều 51 - Luật HNGĐ"]
+            },
+            "extracted": {"case_type": None, "extracted_facts": [], "case_summary": None},
+            "updated_case_type": None, "updated_case_summary": None,
+        },
+    )
+    monkeypatch.setattr(chat_service, "verify_citations", lambda s, c: s)
+    monkeypatch.setattr(chat_service, "add_fact", lambda *_, **__: object())
+    monkeypatch.setattr(chat_service, "update_session_case", lambda *_, **__: object())
+    monkeypatch.setattr(chat_service, "save_message", lambda *_, **__: FakeMsg())
+
+    send_chat_message(db=fake_session, session_id="s1", user_id="u1", message="ly hôn đơn phương")
+    # Verify hybrid_search was called (at least once) with the original query
+    assert captured["query"].startswith("ly hôn đơn phương")
+
+
+def test_chat_merges_hybrid_and_crossref_contexts(fake_session, monkeypatch) -> None:
+    monkeypatch.setattr(chat_service, "list_recent_messages", lambda *_, **__: [])
+    monkeypatch.setattr(chat_service, "list_case_facts", lambda *_: [])
+    class FakeS:
+        case_type = None
+        case_summary = None
+    monkeypatch.setattr(chat_service, "get_session", lambda *_: FakeS())
+
+    # First query = hybrid result; subsequent queries = empty (simulating dedup collapse)
+    hybrid_chunks = [
+        {"id": "1", "content_text": "Điều 51", "title": "L", "source_url": "u", "score": 0.9},
+    ]
+    crossref = [
+        {"id": "2", "content_text": "Nghị định 126 hướng dẫn Điều 51", "title": "NĐ 126", "source_url": "v", "score": 0.0},
+    ]
+
+    call_count = [0]
+    def hybrid_side_effect(query, **kwargs):
+        call_count[0] += 1
+        # First call gets a meaningful result; subsequent calls (if any) get empty
+        if call_count[0] == 1:
+            return hybrid_chunks
+        return []
+
+    monkeypatch.setattr(chat_service, "hybrid_search", hybrid_side_effect)
+    monkeypatch.setattr(chat_service, "multi_query_expand", lambda q, n_variants=2: [q])
+    monkeypatch.setattr(chat_service, "walk_relationships", lambda *_, **__: crossref)
+
+    captured = {}
+    def fake_two_stage(**kwargs):
+        captured["context_ids"] = [c.get("id") for c in kwargs["contexts"]]
+        return {
+            "structured": {
+                "loi_chao": "", "tom_tat_vu_viec": "", "phan_tich_phap_ly": "ok",
+                "phuong_an_khuyen_nghi": [], "rui_ro_can_luu_y": [],
+                "cau_hoi_hoi_them": [], "disclaimer": "ok", "trich_dan_nguon": []
+            },
+            "extracted": {"case_type": None, "extracted_facts": [], "case_summary": None},
+            "updated_case_type": None, "updated_case_summary": None,
+        }
+    monkeypatch.setattr(chat_service, "two_stage_reason", fake_two_stage)
+    monkeypatch.setattr(chat_service, "verify_citations", lambda s, c: s)
+    monkeypatch.setattr(chat_service, "add_fact", lambda *_, **__: object())
+    monkeypatch.setattr(chat_service, "update_session_case", lambda *_, **__: object())
+    monkeypatch.setattr(chat_service, "save_message", lambda *_, **__: FakeMsg())
+
+    send_chat_message(db=fake_session, session_id="s1", user_id="u1", message="q")
+    assert "1" in captured["context_ids"], f"hybrid id not in contexts: {captured['context_ids']}"
+    assert "2" in captured["context_ids"], f"crossref id not in contexts: {captured['context_ids']}"
+
+
+def test_chat_verifies_citations_before_persisting(fake_session, monkeypatch) -> None:
+    monkeypatch.setattr(chat_service, "list_recent_messages", lambda *_, **__: [])
+    monkeypatch.setattr(chat_service, "list_case_facts", lambda *_: [])
+    class FakeS:
+        case_type = None
+        case_summary = None
+    monkeypatch.setattr(chat_service, "get_session", lambda *_: FakeS())
+    monkeypatch.setattr(chat_service, "hybrid_search", lambda *_, **__: [])
+    monkeypatch.setattr(chat_service, "multi_query_expand", lambda q, n_variants=2: [q])
+    monkeypatch.setattr(chat_service, "walk_relationships", lambda *_, **__: [])
+
+    captured = {}
+    def fake_verify(structured, contexts):
+        structured["trich_dan_nguon"] = ["Điều 51 - Luật HNGĐ"]
+        captured["called"] = True
+        return structured
+    monkeypatch.setattr(chat_service, "verify_citations", fake_verify)
+
+    monkeypatch.setattr(
+        chat_service, "two_stage_reason",
+        lambda **_: {
+            "structured": {
+                "loi_chao": "", "tom_tat_vu_viec": "", "phan_tich_phap_ly": "ok",
+                "phuong_an_khuyen_nghi": [], "rui_ro_can_luu_y": [],
+                "cau_hoi_hoi_them": [], "disclaimer": "ok",
+                "trich_dan_nguon": ["Điều 51 - Luật HNGĐ", "Điều 999 - Fabricated"]
+            },
+            "extracted": {"case_type": None, "extracted_facts": [], "case_summary": None},
+            "updated_case_type": None, "updated_case_summary": None,
+        },
+    )
+    # Instead of hooking save_message, verify citations by patching at the
+    # source module level. We only need to verify that:
+    # 1. verify_citations was called
+    # 2. fake_verify replaced the fabricated citation
+    # We can't easily observe the raw structured passed to save_message from
+    # within pytest without understanding the exact call signature. Instead,
+    # we verify at a higher level: after the call, structured has only verified
+    # citations. We use a global capture to observe the structured object
+    # stored by the real save_message.
+    global_verify_result_captured = {}
+    original_save = chat_service.save_message 
+
+    def capture_save_message_wrapper(*args, **kwargs):
+        # Capture structured dict from the assistant save_message call.
+        # Supports both positional (db, sid, uid, role, content, sources_json?)
+        # and keyword (role=, sources_json=) calling conventions.
+        role = args[3] if len(args) >= 4 else kwargs.get("role", "")
+        if role == "assistant":
+            metadata = kwargs.get("sources_json", {})
+            if not metadata and len(args) >= 6:
+                metadata = args[5] or {}
+            global_verify_result_captured["structured"] = (
+                metadata.get("structured") if isinstance(metadata, dict) else None
+            )
+        return original_save(*args, **kwargs)
+    
+    monkeypatch.setattr(chat_service, "save_message", capture_save_message_wrapper)
+    monkeypatch.setattr(chat_service, "add_fact", lambda *_, **__: object())
+    monkeypatch.setattr(chat_service, "update_session_case", lambda *_, **__: object())
+
+    send_chat_message(db=fake_session, session_id="s1", user_id="u1", message="q")
+    assert captured["called"] is True
+    assert global_verify_result_captured.get("structured") is not None, \
+        "structured was not captured in save_message call"
+    assert "Điều 999" not in global_verify_result_captured["structured"]["trich_dan_nguon"]
