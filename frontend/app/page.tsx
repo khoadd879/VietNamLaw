@@ -380,7 +380,11 @@ export default function Home() {
               onSessionCreated={(id) => {
                 setActiveSessionId(id)
                 setActiveSessionTitle('Cuộc tư vấn mới')
-                void hydrateSessions(id)
+                // Don't call hydrateSessions here — it would race with the
+                // upcoming onComplete, and the freshly created session has
+                // no intake yet so it would set intakeDone back to false.
+                // The sidebar will pick up the new session on next render
+                // (e.g. when the user sends a message).
               }}
             />
           ) : hasMessages ? (
