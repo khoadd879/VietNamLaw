@@ -10,13 +10,20 @@ interface LawyerResponseViewProps {
 }
 
 export function LawyerResponseView({ section, sources }: LawyerResponseViewProps) {
+  // Defensive: backend/JSON path can drop fields if the LLM returns a partial
+  // response. Fall back to empty values so we never crash on undefined.length.
+  const phuongAn = section.phuong_an_khuyen_nghi ?? []
+  const ruiRo = section.rui_ro_can_luu_y ?? []
+  const cauHoi = section.cau_hoi_hoi_them ?? []
+  const trichDan = section.trich_dan_nguon ?? []
+
   const hasAny =
     section.loi_chao ||
     section.tom_tat_vu_viec ||
     section.phan_tich_phap_ly ||
-    section.phuong_an_khuyen_nghi.length > 0 ||
-    section.rui_ro_can_luu_y.length > 0 ||
-    section.cau_hoi_hoi_them.length > 0
+    phuongAn.length > 0 ||
+    ruiRo.length > 0 ||
+    cauHoi.length > 0
 
   if (!hasAny) {
     // Defensive: backend forgot to populate, fall back to plain text
@@ -45,11 +52,11 @@ export function LawyerResponseView({ section, sources }: LawyerResponseViewProps
         </section>
       )}
 
-      {section.phuong_an_khuyen_nghi.length > 0 && (
+      {phuongAn.length > 0 && (
         <section aria-label="Phương án khuyến nghị">
           <h4>Phương án khuyến nghị</h4>
           <ul>
-            {section.phuong_an_khuyen_nghi.map((p, i) => (
+            {phuongAn.map((p, i) => (
               <li key={i}>
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{p}</ReactMarkdown>
               </li>
@@ -58,11 +65,11 @@ export function LawyerResponseView({ section, sources }: LawyerResponseViewProps
         </section>
       )}
 
-      {section.rui_ro_can_luu_y.length > 0 && (
+      {ruiRo.length > 0 && (
         <section aria-label="Rủi ro cần lưu ý" className="lawyer-warn-block">
           <h4>⚠️ Rủi ro cần lưu ý</h4>
           <ul>
-            {section.rui_ro_can_luu_y.map((r, i) => (
+            {ruiRo.map((r, i) => (
               <li key={i}>
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{r}</ReactMarkdown>
               </li>
@@ -71,11 +78,11 @@ export function LawyerResponseView({ section, sources }: LawyerResponseViewProps
         </section>
       )}
 
-      {section.cau_hoi_hoi_them.length > 0 && (
+      {cauHoi.length > 0 && (
         <section aria-label="Câu hỏi cần bạn cung cấp thêm" className="lawyer-ask-block">
           <h4>📋 Câu hỏi cần bạn cung cấp thêm</h4>
           <ul>
-            {section.cau_hoi_hoi_them.map((c, i) => (
+            {cauHoi.map((c, i) => (
               <li key={i}>
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{c}</ReactMarkdown>
               </li>
@@ -96,9 +103,9 @@ export function LawyerResponseView({ section, sources }: LawyerResponseViewProps
         are only meaningful when paired with a real citation; otherwise they
         look authoritative but tell the user nothing.
       */}
-      {section.trich_dan_nguon.length > 0 ? (
+      {trichDan.length > 0 ? (
         <div className="message-sources" aria-label="Nguồn tham khảo">
-          {section.trich_dan_nguon.map((cite, i) => (
+          {trichDan.map((cite, i) => (
             <span key={`${cite}-${i}`} className="message-source-chip">
               {cite}
               {sources?.[i] && (

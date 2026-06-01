@@ -218,7 +218,12 @@ export default function Home() {
       return
     }
 
-    const userMsg: ChatUiMessage = { role: 'user', content: text.trim() }
+    const userMsg: ChatUiMessage = {
+      id: `local-${Date.now()}-user`,
+      role: 'user',
+      content: text.trim(),
+      createdAt: new Date().toISOString(),
+    }
     setMessages((prev) => [...prev, userMsg])
     setInput('')
     if (textareaRef.current) {
@@ -230,7 +235,14 @@ export default function Home() {
       const res = await sendAuthedMessage(text.trim())
       setMessages((prev) => [
         ...prev,
-        { role: 'assistant', content: res.reply, sources: res.sources },
+        {
+          id: `local-${Date.now()}-assistant`,
+          role: 'assistant',
+          content: res.reply,
+          sources: res.sources,
+          structured: res.structured,
+          createdAt: new Date().toISOString(),
+        },
       ])
 
       // Refresh sessions so the sidebar reflects the new activity
@@ -247,15 +259,24 @@ export default function Home() {
           const res = await sendAuthedMessage(text.trim())
           setMessages((prev) => [
             ...prev,
-            { role: 'assistant', content: res.reply, sources: res.sources },
+            {
+              id: `local-${Date.now()}-assistant`,
+              role: 'assistant',
+              content: res.reply,
+              sources: res.sources,
+              structured: res.structured,
+              createdAt: new Date().toISOString(),
+            },
           ])
           return
         } catch {
           setMessages((prev) => [
             ...prev,
             {
+              id: `local-${Date.now()}-error`,
               role: 'assistant',
               content: '⚠️ Không thể khôi phục phiên chat. Vui lòng thử lại.',
+              createdAt: new Date().toISOString(),
             },
           ])
           return
@@ -265,8 +286,10 @@ export default function Home() {
       setMessages((prev) => [
         ...prev,
         {
+          id: `local-${Date.now()}-error`,
           role: 'assistant',
           content: '⚠️ Không thể kết nối. Vui lòng thử lại.',
+          createdAt: new Date().toISOString(),
         },
       ])
     } finally {

@@ -9,11 +9,13 @@ interface AssistantMessageProps {
 }
 
 export function AssistantMessage({ message, onCopy }: AssistantMessageProps) {
-  const hasStructured =
-    message.structured &&
-    (message.structured.loi_chao ||
-      message.structured.tom_tat_vu_viec ||
-      message.structured.phan_tich_phap_ly)
+  // Defensive: message.structured can be null/undefined (LLM fallback path,
+  // or legacy messages saved before Sprint 1). Treat it as missing and show
+  // plain text rather than crashing.
+  const s = message.structured
+  const hasStructured = Boolean(
+    s && (s.loi_chao || s.tom_tat_vu_viec || s.phan_tich_phap_ly)
+  )
 
   return (
     <article className="message-row">
@@ -21,8 +23,8 @@ export function AssistantMessage({ message, onCopy }: AssistantMessageProps) {
         Lx
       </div>
       <div className="message-card message-card--assistant">
-        {hasStructured && message.structured ? (
-          <LawyerResponseView section={message.structured} sources={message.sources} />
+        {hasStructured && s ? (
+          <LawyerResponseView section={s} sources={message.sources} />
         ) : (
           <pre className="message-fallback-text">{message.content}</pre>
         )}
