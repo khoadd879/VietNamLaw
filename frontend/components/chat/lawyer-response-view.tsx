@@ -3,13 +3,16 @@
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { LawyerSection } from '@/lib/api'
+import { LegalCitationChip } from './legal-citation-chip'
+import { SuggestedFollowUps } from './suggested-follow-ups'
 
 interface LawyerResponseViewProps {
   section: LawyerSection
   sources: string[] | undefined
+  onSelectFollowUp?: (q: string) => void
 }
 
-export function LawyerResponseView({ section, sources }: LawyerResponseViewProps) {
+export function LawyerResponseView({ section, sources, onSelectFollowUp }: LawyerResponseViewProps) {
   // Defensive: backend/JSON path can drop fields if the LLM returns a partial
   // response. Fall back to empty values so we never crash on undefined.length.
   const phuongAn = section.phuong_an_khuyen_nghi ?? []
@@ -78,17 +81,8 @@ export function LawyerResponseView({ section, sources }: LawyerResponseViewProps
         </section>
       )}
 
-      {cauHoi.length > 0 && (
-        <section aria-label="Câu hỏi cần bạn cung cấp thêm" className="lawyer-ask-block">
-          <h4>📋 Câu hỏi cần bạn cung cấp thêm</h4>
-          <ul>
-            {cauHoi.map((c, i) => (
-              <li key={i}>
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{c}</ReactMarkdown>
-              </li>
-            ))}
-          </ul>
-        </section>
+      {cauHoi.length > 0 && onSelectFollowUp && (
+        <SuggestedFollowUps questions={cauHoi} onSelect={onSelectFollowUp} />
       )}
 
       {section.disclaimer && (
@@ -104,22 +98,9 @@ export function LawyerResponseView({ section, sources }: LawyerResponseViewProps
         look authoritative but tell the user nothing.
       */}
       {trichDan.length > 0 ? (
-        <div className="message-sources" aria-label="Nguồn tham khảo">
+        <div className="legal-citations" aria-label="Trích dẫn pháp lý">
           {trichDan.map((cite, i) => (
-            <span key={`${cite}-${i}`} className="message-source-chip">
-              {cite}
-              {sources?.[i] && (
-                <a
-                  href={sources[i]}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="message-source-link"
-                  aria-label={`Mở nguồn: ${cite}`}
-                >
-                  ↗
-                </a>
-              )}
-            </span>
+            <LegalCitationChip key={`${cite}-${i}`} citation={cite} sourceUrl={sources?.[i]} />
           ))}
         </div>
       ) : null}

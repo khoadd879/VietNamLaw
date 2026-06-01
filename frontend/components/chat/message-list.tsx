@@ -9,6 +9,7 @@ interface MessageListProps {
   messages: ChatUiMessage[]
   loading: boolean
   onCopy: (text: string) => void
+  onSelectFollowUp?: (q: string) => void
   /**
    * Optional external ref for the scroll-anchor at the bottom.
    * When provided, the parent controls scrollIntoView() and this component
@@ -22,6 +23,7 @@ export function MessageList({
   messages,
   loading,
   onCopy,
+  onSelectFollowUp,
   messagesEndRef,
 }: MessageListProps) {
   // Internal anchor — used when no external ref is provided.
@@ -41,7 +43,7 @@ export function MessageList({
     <div className="chat-thread" role="log" aria-live="polite" aria-label="Cuộc hội thoại">
       {messages.map((message, index) =>
         message.role === 'assistant' ? (
-          <AssistantMessage key={index} message={message} onCopy={onCopy} />
+          <AssistantMessage key={index} message={message} onCopy={onCopy} onSelectFollowUp={onSelectFollowUp} />
         ) : (
           <UserMessage key={index} message={message} />
         ),
