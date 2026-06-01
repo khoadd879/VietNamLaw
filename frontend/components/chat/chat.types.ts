@@ -4,10 +4,15 @@
  * and individual presentational components.
  */
 
+import type { LawyerSection } from '@/lib/api'
+
 export interface ChatUiMessage {
+  id: string
   role: 'user' | 'assistant'
   content: string
   sources?: string[]
+  structured?: LawyerSection | null
+  createdAt: string
 }
 
 export interface SessionListItem {
