@@ -25,6 +25,7 @@ import { ChatTopbar } from '@/components/chat/chat-topbar'
 import { ChatComposer } from '@/components/chat/chat-composer'
 import { MessageList } from '@/components/chat/message-list'
 import { WelcomeState } from '@/components/chat/welcome-state'
+import { DisclaimerBanner } from '@/components/chat/disclaimer-banner'
 import { downloadSessionMarkdown } from '@/components/chat/session-export'
 import type { ChatUiMessage, SessionListItem, SuggestionCard } from '@/components/chat/chat.types'
 
@@ -371,13 +372,22 @@ export default function Home() {
         />
 
         <main className="chat-content">
+          <DisclaimerBanner />
           {!intakeDone ? (
             <IntakeForm
               sessionId={activeSessionId!}
               onComplete={() => setIntakeDone(true)}
             />
           ) : hasMessages ? (
-            <MessageList messages={messages} loading={loading} onCopy={handleCopy} />
+            <MessageList
+              messages={messages}
+              loading={loading}
+              onCopy={handleCopy}
+              onSelectFollowUp={(q) => {
+                setInput(q)
+                textareaRef.current?.focus()
+              }}
+            />
           ) : (
             <WelcomeState suggestions={SUGGESTIONS} onAsk={submitMessage} />
           )}

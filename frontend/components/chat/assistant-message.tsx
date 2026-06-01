@@ -6,9 +6,10 @@ import type { ChatUiMessage } from './chat.types'
 interface AssistantMessageProps {
   message: ChatUiMessage
   onCopy: (text: string) => void
+  onSelectFollowUp?: (q: string) => void
 }
 
-export function AssistantMessage({ message, onCopy }: AssistantMessageProps) {
+export function AssistantMessage({ message, onCopy, onSelectFollowUp }: AssistantMessageProps) {
   // Defensive: message.structured can be null/undefined (LLM fallback path,
   // or legacy messages saved before Sprint 1). Treat it as missing and show
   // plain text rather than crashing.
@@ -24,7 +25,7 @@ export function AssistantMessage({ message, onCopy }: AssistantMessageProps) {
       </div>
       <div className="message-card message-card--assistant">
         {hasStructured && s ? (
-          <LawyerResponseView section={s} sources={message.sources} />
+          <LawyerResponseView section={s} sources={message.sources} onSelectFollowUp={onSelectFollowUp} />
         ) : (
           <pre className="message-fallback-text">{message.content}</pre>
         )}
