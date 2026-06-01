@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { submitIntake, type IntakeResponse } from '@/lib/api'
+import { submitIntake, createSession, type IntakeResponse } from '@/lib/api'
 
 const CASE_TYPES = [
   { value: 'hôn nhân gia đình', label: 'Hôn nhân & Gia đình' },
@@ -15,11 +15,12 @@ const CASE_TYPES = [
 ] as const
 
 interface IntakeFormProps {
-  sessionId: string
+  sessionId: string | null
   onComplete: (resp: IntakeResponse) => void
+  onSessionCreated?: (sessionId: string) => void
 }
 
-export function IntakeForm({ sessionId, onComplete }: IntakeFormProps) {
+export function IntakeForm({ sessionId, onComplete, onSessionCreated }: IntakeFormProps) {
   const [caseType, setCaseType] = useState('')
   const [caseSummary, setCaseSummary] = useState('')
   const [facts, setFacts] = useState<Array<{ key: string; value: string }>>([
@@ -44,8 +45,20 @@ export function IntakeForm({ sessionId, onComplete }: IntakeFormProps) {
     const cleanFacts = facts.filter(f => f.key.trim() && f.value.trim())
     setSubmitting(true)
     try {
+      // If parent hasn't created a session yet (first visit), create one now so
+      // the intake payload has a real session_id. Without this, /chat/intake
+      // returns 422 because session_id is required.
+      let activeId = sessionId
+      if (!activeId) {
+        const session = await createSession('Cuộc tư vấn mới')
+        activeId = session.id
+        if (typeof window !== 'undefined') {
+          window.localStorage.setItem('vnl_active_session_id', activeId)
+        }
+        onSessionCreated?.(activeId)
+      }
       const resp = await submitIntake({
-        session_id: sessionId,
+        session_id: activeId,
         case_type: caseType,
         case_summary: caseSummary,
         initial_facts: cleanFacts,

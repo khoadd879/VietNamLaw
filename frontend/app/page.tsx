@@ -375,8 +375,13 @@ export default function Home() {
           <DisclaimerBanner />
           {!intakeDone ? (
             <IntakeForm
-              sessionId={activeSessionId!}
+              sessionId={activeSessionId}
               onComplete={() => setIntakeDone(true)}
+              onSessionCreated={(id) => {
+                setActiveSessionId(id)
+                setActiveSessionTitle('Cuộc tư vấn mới')
+                void hydrateSessions(id)
+              }}
             />
           ) : hasMessages ? (
             <MessageList
