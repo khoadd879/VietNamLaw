@@ -1,25 +1,29 @@
 import logging
 
-from services.answer_service import generate_answer
-from services.groq_service import generate_structured_answer
+from services.groq_service import generate_answer
 from services.qdrant_service import search_legal_context
-from services.session_service import get_session, save_message
+from services.session_service import (
+    add_fact,
+    get_session,
+    list_case_facts,
+    save_message,
+    update_session_case,
+)
+from services.two_stage_reasoner import two_stage_reason
 from repositories.messages import list_recent_messages
 
 logger = logging.getLogger(__name__)
 
 HISTORY_LIMIT = 10
 RETRIEVAL_TOP_K = 4
-LOW_SCORE_THRESHOLD = 0.55  # below this we treat retrieval as unreliable
+LOW_SCORE_THRESHOLD = 0.55
 
 
 def _format_history_for_llm(messages) -> list[dict]:
-    """Convert ORM messages to plain dicts in OpenAI chat format."""
     return [{"role": m.role, "content": m.content} for m in messages]
 
 
 def _structured_to_display_text(structured: dict) -> str:
-    """Flatten the 7-section JSON into a user-friendly Markdown block for fallback/sources."""
     parts: list[str] = []
     if structured.get("loi_chao"):
         parts.append(f"**{structured['loi_chao']}**\n")
@@ -52,50 +56,110 @@ def _is_retrieval_reliable(contexts: list[dict]) -> bool:
     return True
 
 
+def _persist_extracted_facts(
+    db,
+    session_id: str,
+    user_id: str,
+    source_message_id: str,
+    extracted: dict,
+) -> None:
+    for fact in extracted.get("extracted_facts", []) or []:
+        if not fact.get("key") or fact.get("value") is None:
+            continue
+        add_fact(
+            db,
+            session_id=session_id,
+            user_id=user_id,
+            fact_key=fact["key"],
+            fact_value=str(fact["value"]),
+            source_message_id=source_message_id,
+            confidence=float(fact.get("confidence", 1.0)),
+        )
+
+
+def _persist_case_update(
+    db,
+    session_id: str,
+    user_id: str,
+    case_type: str | None,
+    case_summary: str | None,
+    *,
+    mark_intake_complete: bool = False,
+) -> None:
+    from datetime import datetime, timezone
+    update_session_case(
+        db,
+        session_id=session_id,
+        user_id=user_id,
+        case_type=case_type,
+        case_summary=case_summary,
+        conversation_phase="consulting" if mark_intake_complete else None,
+        intake_completed_at=datetime.now(timezone.utc) if mark_intake_complete else None,
+    )
+
+
 def send_chat_message(
     db,
     session_id: str,
     user_id: str,
     message: str,
-) -> tuple[str, list[str], dict | None]:
-    """Main chat entry point used by the API route.
+) -> tuple[str, list[str], dict | None, dict | None]:
+    """Main chat entry point.
 
-    Returns (display_text, sources, structured_dict_or_None).
+    Returns (display_text, sources, structured, case_brief).
     """
     session = get_session(db, session_id, user_id)
     if session is None:
         raise ValueError("Session not found")
 
     # 1. Persist user turn first
-    save_message(db, session_id, user_id, "user", message)
+    user_msg = save_message(db, session_id, user_id, "user", message)
 
-    # 2. Load recent history (oldest -> newest) for context
+    # 2. Load recent history
     recent = list_recent_messages(db, session_id, limit=HISTORY_LIMIT)
-    # Drop the message we just saved from the history we feed to the LLM
     history = _format_history_for_llm(recent[:-1])
 
-    # 3. Retrieve legal context
+    # 3. Load existing case facts
+    existing_facts = list_case_facts(db, session_id)
+
+    # 4. Retrieve legal context
     contexts = search_legal_context(message, top_k=RETRIEVAL_TOP_K)
-
-    # 4. Guard: if retrieval is empty/unreliable, do NOT silently invent law.
-    #    We still call the LLM with empty contexts; the system prompt instructs
-    #    the LLM to ask for more facts and not invent citations.
     if not _is_retrieval_reliable(contexts):
-        logger.info("Retrieval unreliable for session=%s msg=%r", session_id, message[:80])
+        logger.info("Retrieval unreliable for session=%s", session_id)
 
-    # 5. Try structured JSON path first
-    structured: dict | None = None
+    # 5. Two-stage reason
     try:
-        structured = generate_structured_answer(
-            question=message, contexts=contexts, history=history
+        result = two_stage_reason(
+            message=message,
+            contexts=contexts,
+            history=history,
+            existing_facts=existing_facts,
+            case_type=getattr(session, "case_type", None),
+            case_summary=getattr(session, "case_summary", None),
         )
     except ValueError as exc:
-        logger.warning("Structured answer failed (%s), falling back to text", exc)
+        logger.warning("Two-stage failed: %s", exc)
         text = generate_answer(question=message, contexts=contexts, history=history)
         save_message(db, session_id, user_id, "assistant", text, {"sources": []})
-        return text, [], None
+        return text, [], None, None
 
-    # 6. Render display text from structured JSON
+    structured = result["structured"]
+    extracted = result["extracted"]
+
+    # 6. Persist extracted facts
+    _persist_extracted_facts(db, session_id, user_id, user_msg.id, extracted)
+
+    # 7. Persist case_type / case_summary update; mark intake complete if we got facts
+    _persist_case_update(
+        db,
+        session_id,
+        user_id,
+        case_type=result.get("updated_case_type"),
+        case_summary=result.get("updated_case_summary"),
+        mark_intake_complete=bool(extracted.get("extracted_facts")),
+    )
+
+    # 8. Render display text
     display = _structured_to_display_text(structured)
     # Only surface sources the LLM actually cited. If trich_dan_nguon is empty
     # (e.g. retrieval was unreliable and the LLM correctly refused to invent
@@ -103,13 +167,14 @@ def send_chat_message(
     # article — they look authoritative but mean nothing to the user.
     cited_sources: list[str] = []
     if structured.get("trich_dan_nguon"):
-        cited_sources = [
-            item.get("source_url", "")
-            for item in contexts
-            if item.get("source_url")
-        ]
+        cited_sources = [c.get("source_url", "") for c in contexts if c.get("source_url")]
+    case_brief = {
+        "case_type": result.get("updated_case_type"),
+        "case_summary": result.get("updated_case_summary"),
+        "facts": [{"key": f.fact_key, "value": f.fact_value, "confidence": f.confidence} for f in existing_facts],
+    }
     save_message(
         db, session_id, user_id, "assistant", display,
-        {"sources": cited_sources, "structured": structured},
+        {"sources": cited_sources, "structured": structured, "case_brief": case_brief},
     )
-    return display, cited_sources, structured
+    return display, cited_sources, structured, case_brief

@@ -18,6 +18,7 @@ class ChatResponse(BaseModel):
     reply: str
     sources: list[str] | None = None
     structured: dict | None = None
+    case_brief: dict | None = None
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -27,9 +28,9 @@ async def chat(
     db: Session = Depends(get_db),
 ) -> ChatResponse:
     try:
-        reply, sources, structured = send_chat_message(
+        reply, sources, structured, case_brief = send_chat_message(
             db, request.session_id, str(current_user.id), request.message
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    return ChatResponse(reply=reply, sources=sources, structured=structured)
+    return ChatResponse(reply=reply, sources=sources, structured=structured, case_brief=case_brief)

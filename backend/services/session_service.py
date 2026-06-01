@@ -1,6 +1,8 @@
 from uuid import uuid4
+from entities.case_fact import CaseFact
 from entities.chat_message import ChatMessage
 from entities.chat_session import ChatSession
+from repositories.case_facts import list_facts_for_session, upsert_fact
 from repositories.messages import create_message, list_messages_for_session
 from repositories.sessions import (
     create_session as repo_create_session,
@@ -67,3 +69,56 @@ def save_message(
         sources_json=json.dumps(sources_json) if sources_json else None,
     )
     return create_message(db, message)
+
+
+def update_session_case(
+    db,
+    session_id: str,
+    user_id: str,
+    case_type: str | None = None,
+    case_summary: str | None = None,
+    conversation_phase: str | None = None,
+    intake_completed_at=None,
+) -> ChatSession | None:
+    session = get_session_for_user(db, session_id, user_id)
+    if session is None:
+        return None
+    if case_type is not None:
+        session.case_type = case_type
+    if case_summary is not None:
+        session.case_summary = case_summary
+    if conversation_phase is not None:
+        session.conversation_phase = conversation_phase
+    if intake_completed_at is not None:
+        session.intake_completed_at = intake_completed_at
+    from datetime import datetime
+    session.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(session)
+    return session
+
+
+def add_fact(
+    db,
+    session_id: str,
+    user_id: str,
+    fact_key: str,
+    fact_value: str,
+    source_message_id: str | None = None,
+    confidence: float = 1.0,
+) -> CaseFact:
+    from uuid import uuid4
+    return upsert_fact(
+        db,
+        fact_id=str(uuid4()),
+        session_id=session_id,
+        user_id=user_id,
+        fact_key=fact_key,
+        fact_value=fact_value,
+        source_message_id=source_message_id,
+        confidence=confidence,
+    )
+
+
+def list_case_facts(db, session_id: str) -> list[CaseFact]:
+    return list_facts_for_session(db, session_id)
