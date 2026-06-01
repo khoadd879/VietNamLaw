@@ -6,9 +6,12 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Citation strings LLM might produce
+# Citation strings LLM might produce. We match the canonical form (Điều N,
+# Khoản N, Điểm x) so the extracted phrase is short enough to fuzzy-match
+# chunk content. Non-greedy: stop at the first dash/comma/space-after-number
+# so "Điều 51 - Luật HNGĐ" yields "điều 51" not the whole string.
 _CITATION_RE = re.compile(
-    r"(Điều\s+\d+[^,;\n]*)|(Khoản\s+\d+[^,;\n]*)|(Điểm\s+[a-z]\d*[^,;\n]*)",
+    r"(?:Điều|Khoản|Điểm)\s+\w+",
     re.IGNORECASE,
 )
 

@@ -1,13 +1,13 @@
 from services.citation_verifier import (
-    _extract_citation_segments,
+    _extract_citation_phrases,
     _phrase_present_in_chunks,
     verify_citations,
 )
 
 
-def test_extract_citation_segments_finds_dieu_and_khoan() -> None:
+def test_extract_citation_phrases_finds_dieu_and_khoan() -> None:
     text = "Căn cứ Điều 51 Khoản 2 Luật HNGĐ và Điểm a Khoản 1 Điều 56"
-    phrases = _extract_citation_segments(text)
+    phrases = _extract_citation_phrases(text)
     joined = " ".join(phrases)
     assert "điều 51" in joined
     assert "khoản 2" in joined
