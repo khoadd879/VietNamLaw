@@ -46,26 +46,91 @@ Sampled 5 points from Qdrant + 1 record from HuggingFace dataset `tmquan/phapdie
 
 ## Approach: Re-ingest + backend enrich + tighten prompt
 
-### Step 1 — Re-ingest Qdrant with new payload fields
+### Step 1 — Fix `ingest_articles()` to read existing article dict fields
 
-Modify `ingest_articles()` in `backend/services/qdrant_service.py` to read these additional fields from the article dict and store them in each point's payload:
+**Key finding (2026-06-01 revision):** the article dict built by `scripts/ingest_phapdien_moj.py:99-115` **already contains** `source_note`, `subject_title`, `topic_title`, `related_note` from the HF dataset. The bug is in `backend/services/qdrant_service.py:571-588` (`_embed_and_build` payload construction) — it doesn't read these fields, so they get dropped before reaching Qdrant.
 
-| New payload field | Source from dataset | Use in enricher |
-|---|---|---|
-| `source_note_text` | `source_note_text` | **Primary**: full legal reference like `(Điều 1 Luật số 32/2004/QH11 An ninh Quốc gia ngày 03/12/2004 của Quốc hội...)` |
-| `article_title_full` | `article_title` | "Điều 1.1.LQ.1. Phạm vi điều chỉnh" — long internal form (kept for debugging) |
-| `chapter_title_full` | `chapter_title` | "Chương I - NHỮNG QUY ĐỊNH CHUNG" |
-| `source_links` | `source_links` | list of `{text, href}` — alternative URLs |
+**Fix in 2 lines:** add the missing field reads to the payload dict in `_embed_and_build`.
 
-`article_label` and `chapter_label` keep their current short form (used for matching, not display). Add the new fields alongside.
+```python
+# Current (drops the fields):
+payload={
+    "content_text": article["content_text"],
+    "title": article["title"],
+    # ... no source_note, no related_note, no subject/topic_title
+}
 
-**Re-ingest mechanics:**
-- One-off script: `backend/scripts/reingest_with_citation_fields.py`
-- Reads from same HF dataset config (`articles`, split `train`)
-- Calls existing `ingest_articles()` with payload updates
-- **Destructive** — wipes `legal_articles` collection first, re-embeds everything
-- Run takes ~5-15 min for the full dataset; can be done overnight or while dev is paused
-- BM25 index also needs rebuild after re-ingest (existing helper handles this)
+# Fixed:
+payload={
+    "content_text": article["content_text"],
+    "title": article["title"],
+    # ... existing
+    "source_note_text": article.get("source_note", ""),  # was dropped!
+    "related_note": article.get("related_note", ""),    # was dropped!
+    "subject_title": article.get("subject_title", ""),  # was dropped!
+    "topic_title": article.get("topic_title", ""),      # was dropped!
+}
+```
+
+**Note on field naming:** the ingest script uses `source_note` (line 112), but for consistency with the HF dataset's original name `source_note_text`, the spec recommends renaming the script's key to `source_note_text` in a separate small edit. The fix above accommodates both via `article.get("source_note", "")` — if you want the dataset-aligned name in Qdrant, also update the script.
+
+### Step 2 — Re-run the existing ingest script
+
+Once `ingest_articles()` reads the right fields, just re-run:
+
+```bash
+python scripts/ingest_phapdien_moj.py --reset-checkpoint
+```
+
+This will:
+- Re-read every row from `tmquan/phapdien-moj-gov-vn/articles`
+- Re-embed and re-upsert to Qdrant (with the new fields this time)
+- Re-build the BM25 index (existing helper at end of pipeline)
+- Take ~5-15 min for the full dataset; resumable via checkpoint
+- **Destructive** — collection is upserted in place (idempotent for same point IDs), no need to delete
+
+No new script needed. The existing one already maps the dataset correctly.
+
+### Why this is much smaller than the original spec
+
+Original spec assumed we needed:
+- A new `reingest_with_citation_fields.py` script
+- New payload field additions
+- 2 separate PRs
+
+Reality:
+- Script exists
+- Article dict already has the fields
+- Only `_embed_and_build()` payload needs the 4 new lines
+- 1 PR, ~10 lines of code total
+
+### Step 3 — Backend enricher uses `source_note_text` (unchanged from original spec)
+
+New module: `backend/services/citation_enricher.py` (~60 lines).
+
+For each string in `structured.trich_dan_nguon`:
+1. Parse "Điều X" / "Khoản Y" / "Điểm Z" from the LLM citation
+2. Find matching context by article number (in `article_label` or `content_text`)
+3. If matched, get `source_note_text` from that context — this is the full legal reference
+4. Build display label: combine parsed parts + law reference from `source_note_text`
+
+Example output:
+- LLM says: `"Khoản 2 Điều 51"`
+- Matched chunk has `source_note_text = "(Điều 51 Luật Hôn nhân và Gia đình 2014)"`
+- Display: `"Khoản 2 · Điều 51 · Luật Hôn nhân và Gia đình 2014"`
+
+If no `source_note_text` available → fall back to raw citation string (no crash).
+
+### Step 4 — Synthesizer prompt edit
+
+Edit the synthesizer prompt (location TBD, see open questions) to:
+- Forbid URL in `trich_dan_nguon` (instruct LLM to write "Điều X" form)
+- Add length guidance per field (phan_tich_phap_ly: 2-4 đoạn 80-150 từ; phuong_an: 1-3 câu có bước hành động; rui_ro: 1-2 câu nêu hậu quả pháp lý; cau_hoi: ngắn gọn tập trung facts còn thiếu)
+
+### Step 5 — Frontend render
+
+- `frontend/lib/api.ts`: add `trich_dan_nguon_label?: string[]` to `LawyerSection`
+- `frontend/components/chat/legal-citation-chip.tsx`: add optional `label` prop, prefer it over regex-parsed label
 
 ### Step 2 — Backend enricher uses `source_note_text` (no regex!)
 
@@ -119,70 +184,106 @@ User sees: 📜 Khoản 2 · Điều 51 · Luật Hôn nhân và Gia đình 2014
 
 ## Components
 
-### A. `backend/scripts/reingest_with_citation_fields.py` (new, ~60 lines)
+### A. `backend/services/qdrant_service.py` — fix `_embed_and_build` payload (1 hunk, ~5 lines)
+
+The fix is purely additive — read 4 more fields from the article dict and put them in the Qdrant payload. No existing field removed, no schema change. See diff in **Step 1** above.
+
+### B. `backend/services/citation_enricher.py` (new, ~60 lines) — unchanged from original spec
+
+(see below)
 
 ```python
-"""Re-ingest Qdrant collection with citation-related fields preserved.
+"""Build rich citation labels (article + law reference) from retrieved chunks."""
+import logging
+import re
+from typing import Any
 
-Destructive: drops and rebuilds the legal_articles collection plus BM25 index.
-Run once after merging this change, then delete the script or keep for future migrations.
-"""
-from datasets import load_dataset
-from services.qdrant_service import (
-    QDRANT_COLLECTION_NAME,
-    get_qdrant_client,
-    ingest_articles,
-)
-from services.bm25_index import build_index, save_index
+logger = logging.getLogger(__name__)
 
-# 1. Load dataset
-ds = load_dataset("tmquan/phapdien-moj-gov-vn", "articles", split="train")
+_ARTICLE_RE = re.compile(r"Điều\s+(\w+)", re.IGNORECASE)
+_KHOAN_RE = re.compile(r"Khoản\s+(\w+)", re.IGNORECASE)
+_DIEM_RE = re.compile(r"Điểm\s+(\w+)", re.IGNORECASE)
 
-# 2. Transform to article dicts (matching existing split_legal_chunks output shape)
-articles = []
-for row in ds:
-    # article_id must be stable: use article_anchor or hash of source_url
-    article_id = row["article_anchor"]  # or build from source_url
-    article = {
-        "id": article_id,
-        "doc_id": row["subject_id"],
-        "title": row["article_title"],
-        "content_text": row["content_text"],
-        "chunk_index": 0,
-        "source_url": row["source_url"],
-        # NEW fields:
-        "source_note_text": row.get("source_note_text", ""),
-        "article_title": row.get("article_title", ""),
-        "chapter_title": row.get("chapter_title", ""),
-        "source_links": row.get("source_links", []),
-        # Legacy fields (Qdrant expects them):
-        "so_ky_hieu": "",
-        "loai_van_ban": "",  # not in dataset, kept for back-compat
-        "co_quan_ban_hanh": "",
-        "tinh_trang_hieu_luc": "",
-        "linh_vuc": row.get("topic_title", ""),
-        "nganh": row.get("subject_title", ""),
-        "article_label": row.get("article_title", ""),
-        "chapter_label": row.get("chapter_title", ""),
-        "chunk_level": "article",
-        "total_chunks": 1,
-    }
-    articles.append(article)
 
-# 3. Wipe + re-ingest
-client = get_qdrant_client()
-client.delete_collection(QDRANT_COLLECTION_NAME)
-# Recreate collection (matching the schema expected by existing code)
-# ... (or call existing init_collection helper if available)
-ingest_articles(articles)
+def _find_matching_context(citation: str, contexts: list[dict]) -> dict | None:
+    m = _ARTICLE_RE.search(citation or "")
+    if not m:
+        return None
+    article_token = m.group(1).lower()
+    for c in contexts:
+        label = (c.get("article_label") or "").lower()
+        content = (c.get("content_text") or "").lower()
+        if article_token in label or f"điều {article_token}" in content:
+            return c
+    return None
 
-# 4. Rebuild BM25
-bm25, meta = build_index()
-save_index(bm25, meta)
-print(f"Re-ingested {len(articles)} articles")
+
+def _extract_law_reference(source_note_text: str) -> str | None:
+    if not source_note_text:
+        return None
+    m = re.search(r"(Luật[^\n,]*?)(?:,|ngày)", source_note_text)
+    if m:
+        return m.group(1).strip()
+    return source_note_text.strip("()").strip() or None
+
+
+def _build_label(citation: str, matched: dict | None) -> str:
+    if not citation or citation.startswith("http"):
+        return citation
+    parts = []
+    if (m := _DIEM_RE.search(citation)):
+        parts.append(f"Điểm {m.group(1)}")
+    if (m := _KHOAN_RE.search(citation)):
+        parts.append(f"Khoản {m.group(1)}")
+    if (m := _ARTICLE_RE.search(citation)):
+        parts.append(f"Điều {m.group(1)}")
+    if matched:
+        ref = _extract_law_reference(matched.get("source_note_text", ""))
+        if ref and ref not in " ".join(parts):
+            parts.append(ref)
+    return " · ".join(parts) if len(parts) > 1 else citation
+
+
+def enrich_citations(structured: dict, contexts: list[dict[str, Any]]) -> dict:
+    cited: list[str] = structured.get("trich_dan_nguon") or []
+    labels: list[str] = [
+        _build_label(cite, _find_matching_context(cite, contexts)) for cite in cited
+    ]
+    structured["trich_dan_nguon_label"] = labels
+    return structured
 ```
 
-**Note:** the script must be reviewed carefully against the existing `ingest_articles()` payload schema to ensure we don't break callers like `citation_verifier.py` and `bm25_index.py` that read `article_label`, `chapter_label`, `source_url`, `content_text`.
+### C. `backend/services/chat_service.py` — wire enricher
+
+Insert 1 line after `verify_citations(...)`:
+```python
+from services.citation_enricher import enrich_citations
+structured = verify_citations(structured, contexts)
+structured = enrich_citations(structured, contexts)
+```
+
+### D. Synthesizer prompt edit (location TBD)
+
+Read `backend/services/prompt_loader.py` to find the file path. Likely `backend/prompts/synthesizer.md` or similar. Add per-field length guidance and forbid URL in `trich_dan_nguon`.
+
+### E. Frontend 2 small changes
+
+```ts
+// frontend/lib/api.ts
+export interface LawyerSection {
+  // ... existing fields
+  trich_dan_nguon_label?: string[]
+}
+```
+
+```tsx
+// frontend/components/chat/legal-citation-chip.tsx
+interface LegalCitationChipProps {
+  citation: string
+  label?: string
+  sourceUrl?: string
+}
+```
 
 ### B. `backend/services/citation_enricher.py` (new, ~60 lines)
 
@@ -314,11 +415,14 @@ interface LegalCitationChipProps {
 
 ## Rollout
 
-Two PRs (cleaner history):
-- **PR 1**: re-ingest script + ingest_articles payload update. Manual run by user. Re-build BM25. Verify Qdrant has new fields.
-- **PR 2**: enricher + prompt + frontend (independent of ingest; uses new fields when available, falls back gracefully if old).
+Single PR is sufficient:
 
-Or single PR if user prefers — both work because the enricher is defensive.
+1. **Code change**: fix `_embed_and_build` in `qdrant_service.py` (5 lines) + add `citation_enricher.py` (60 lines) + 1 line in `chat_service.py` + 2 frontend changes
+2. **Manual re-ingest**: user runs `python scripts/ingest_phapdien_moj.py --reset-checkpoint` (~5-15 min, resumable)
+3. **Manual BM25 rebuild**: run `python backend/scripts/build_bm25_index.py` (or restart backend — it builds on startup if missing)
+4. **Verify**: send a chat message, confirm `trich_dan_nguon_label` appears in API response and chip displays "Điều X · Luật Y" form
+
+The enricher is defensive — it falls back to raw citation if `source_note_text` is missing — so even if re-ingest is delayed, the code merge doesn't break anything.
 
 ## Open questions
 
