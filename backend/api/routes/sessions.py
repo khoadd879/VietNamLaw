@@ -1,3 +1,6 @@
+import json
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from dto.session import MessageResponse, SessionCreateRequest, SessionResponse, SessionUpdateRequest
@@ -13,7 +16,24 @@ from services.session_service import (
     rename_session as svc_rename_session,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/chat/sessions", tags=["chat-sessions"])
+
+
+def _parse_sources_json(raw: str | None) -> dict | None:
+    """DB stores sources_json as a JSON string; parse it for the API response.
+
+    Returns None when the value is missing or unparseable (defensive: we never
+    want a malformed legacy row to 500 the whole list endpoint).
+    """
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError) as exc:
+        logger.warning("Failed to parse sources_json: %s", exc)
+        return None
 
 
 @router.post("", response_model=SessionResponse)
@@ -89,7 +109,7 @@ async def list_messages(
             user_id=str(m.user_id),
             role=m.role,
             content=m.content,
-            sources_json=m.sources_json,
+            sources_json=_parse_sources_json(m.sources_json),
         )
         for m in messages
     ]
