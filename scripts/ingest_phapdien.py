@@ -1,150 +1,274 @@
 #!/usr/bin/env python3
 """
-Ingestion script for phapdien-moj-gov-vn dataset.
-Loads Vietnamese legal articles from HuggingFace, embeds via Gemini, upserts to Qdrant Cloud.
+Ingestion script for Vietnamese legal documents dataset.
+Loads metadata via Hugging Face datasets, reads large HTML content via parquet,
+chunks cleaned text, and upserts to Qdrant Cloud.
 """
 
 import argparse
 import json
-import os
 import sys
 from datetime import datetime
 from pathlib import Path
 
-# Add backend to path for imports
+import pyarrow.parquet as pq
+from datasets import load_dataset
+from huggingface_hub import hf_hub_download
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
 
-from datasets import load_dataset
-
-from core.config import (
-    GEMINI_API_KEY,
-    GEMINI_EMBEDDING_MODEL,
+from core.config import (  # noqa: E402
     INGEST_BATCH_SIZE,
+    LEGAL_ARTICLE_CHAPTER_THRESHOLD,
+    LEGAL_CHUNK_MAX_CHARS,
+    LEGAL_DATASET_CONTENT_CONFIG,
+    LEGAL_DATASET_METADATA_CONFIG,
+    LEGAL_DATASET_NAME,
+    LEGAL_DATASET_RELATIONSHIPS_CONFIG,
+    LEGAL_DATASET_SPLIT,
     QDRANT_API_KEY,
     QDRANT_COLLECTION_NAME,
-    QDRANT_URL,
 )
-from services.qdrant_service import embed_texts, ensure_collection_exists, get_qdrant_client, ingest_articles
+from services.qdrant_service import (  # noqa: E402
+    build_vbpl_source_url,
+    clean_html_text,
+    ensure_collection_exists,
+    get_qdrant_client,
+    ingest_articles,
+    split_legal_chunks,
+)
 
 
-def get_checkpoint_path() -> Path:
-    return Path(__file__).parent.parent / "data" / ".ingest_checkpoint.json"
+def get_checkpoint_path(worker_id: str | None = None) -> Path:
+    base = Path(__file__).parent.parent / "data"
+    if worker_id is not None:
+        return base / f".ingest_articles_w{worker_id}.json"
+    return base / ".ingest_articles.json"
 
 
-def load_checkpoint() -> dict | None:
-    """Load checkpoint if exists."""
-    path = get_checkpoint_path()
+def load_checkpoint(checkpoint_path: Path | None = None, worker_id: str | None = None) -> dict | None:
+    path = checkpoint_path or get_checkpoint_path(worker_id=worker_id)
     if path.exists():
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     return None
 
 
-def save_checkpoint(last_processed_index: int, last_processed_id: str) -> None:
-    """Save checkpoint after each batch."""
-    checkpoint = {
+def save_checkpoint(last_processed_index: int, last_processed_id: str, checkpoint_path: Path | None = None, worker_id: str | None = None) -> None:
+    checkpoint: dict[str, object] = {
         "last_processed_index": last_processed_index,
         "last_processed_id": last_processed_id,
         "timestamp": datetime.now().isoformat(),
     }
-    path = get_checkpoint_path()
+    if worker_id is not None:
+        checkpoint["worker_id"] = worker_id
+    path = checkpoint_path or get_checkpoint_path(worker_id=worker_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(checkpoint, f, ensure_ascii=False, indent=2)
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Ingest phapdien-moj-gov-vn dataset into Qdrant")
-    parser.add_argument("--limit", type=int, default=None, help="Process at most N articles (smoke test)")
+def get_parquet_path(filename: str) -> str:
+    return hf_hub_download(repo_id=LEGAL_DATASET_NAME, filename=filename, repo_type="dataset")
+
+
+def load_content_by_id() -> dict[str, str]:
+    path = get_parquet_path(f"data/{LEGAL_DATASET_CONTENT_CONFIG}.parquet")
+    table = pq.read_table(path, columns=["id", "content_html"])
+    return {
+        str(row["id"]): row["content_html"]
+        for row in table.to_pylist()
+        if row.get("content_html")
+    }
+
+
+def load_relationships_by_doc_id() -> dict[str, list[dict[str, str]]]:
+    path = get_parquet_path(f"data/{LEGAL_DATASET_RELATIONSHIPS_CONFIG}.parquet")
+    table = pq.read_table(path, columns=["doc_id", "other_doc_id", "relationship"])
+    relationships: dict[str, list[dict[str, str]]] = {}
+    for row in table.to_pylist():
+        doc_id = str(row["doc_id"])
+        relationships.setdefault(doc_id, []).append(
+            {
+                "other_doc_id": str(row["other_doc_id"]),
+                "relationship": row["relationship"] or "",
+            }
+        )
+    return relationships
+
+
+def build_chunk_records(row: dict, content_html: str, relationships: list[dict[str, str]]) -> list[dict]:
+    doc_id = str(row["id"])
+    content_text = clean_html_text(content_html)
+    if not content_text:
+        return []
+
+    chunks = split_legal_chunks(
+        content_text,
+        max_chars=LEGAL_CHUNK_MAX_CHARS,
+        article_threshold=LEGAL_ARTICLE_CHAPTER_THRESHOLD,
+    )
+    valid_chunks = [chunk for chunk in chunks if str(chunk.get("content_text", "") or "").strip()]
+    total_chunks = len(valid_chunks)
+    records = []
+    for chunk_index, chunk in enumerate(valid_chunks):
+        chunk_text = str(chunk.get("content_text", "") or "")
+        records.append(
+            {
+                "id": f"{doc_id}:{chunk_index}",
+                "doc_id": doc_id,
+                "chunk_index": chunk_index,
+                "total_chunks": total_chunks,
+                "content_text": chunk_text,
+                "chapter_label": chunk.get("chapter_label"),
+                "article_label": chunk.get("article_label"),
+                "chunk_level": chunk.get("chunk_level"),
+                "title": row.get("title", ""),
+                "so_ky_hieu": row.get("so_ky_hieu", "") or "",
+                "loai_van_ban": row.get("loai_van_ban", "") or "",
+                "co_quan_ban_hanh": row.get("co_quan_ban_hanh", "") or "",
+                "tinh_trang_hieu_luc": row.get("tinh_trang_hieu_luc", "") or "",
+                "linh_vuc": row.get("linh_vuc", "") or "",
+                "nganh": row.get("nganh", "") or "",
+                "source_url": build_vbpl_source_url(doc_id),
+                "relationships": relationships,
+            }
+        )
+    return records
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Ingest Vietnamese legal documents into Qdrant")
+    parser.add_argument("--limit", type=int, default=None, help="Process at most N metadata documents")
     parser.add_argument("--reset-checkpoint", action="store_true", help="Ignore existing checkpoint and start from 0")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--start-index",
+        type=int,
+        default=None,
+        dest="start_index",
+        help="Starting metadata index (inclusive). When set, default checkpoint is ignored.",
+    )
+    parser.add_argument(
+        "--end-index",
+        type=int,
+        default=None,
+        dest="end_index",
+        help="Ending metadata index (inclusive). Defaults to last document.",
+    )
+    parser.add_argument(
+        "--checkpoint-path",
+        type=str,
+        default=None,
+        dest="checkpoint_path",
+        help="Path for checkpoint file (for parallel workers). Overrides the default path.",
+    )
+    parser.add_argument(
+        "--worker-id",
+        type=str,
+        default=None,
+        dest="worker_id",
+        help="Worker identifier for isolated checkpoint files (e.g. '0', '1').",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = _parse_args()
 
     print("=" * 60)
-    print("phapdien-moj-gov-vn Ingestion Script")
+    print("Vietnamese Legal Documents Ingestion Script")
     print("=" * 60)
 
-    # Validate config
-    if not GEMINI_API_KEY:
-        print("ERROR: GEMINI_API_KEY not set")
-        sys.exit(1)
     if not QDRANT_API_KEY:
         print("ERROR: QDRANT_API_KEY not set")
         sys.exit(1)
 
-    # Check for checkpoint
-    checkpoint = None if args.reset_checkpoint else load_checkpoint()
+    checkpoint_path = Path(args.checkpoint_path) if args.checkpoint_path else None
+
+    checkpoint = (
+        None
+        if args.reset_checkpoint or args.start_index is not None
+        else load_checkpoint(checkpoint_path, worker_id=args.worker_id)
+    )
     start_index = 0
     if checkpoint:
         start_index = checkpoint["last_processed_index"] + 1
         print(f"Resuming from checkpoint: index {start_index}")
         print(f"Last processed ID: {checkpoint['last_processed_id']}")
         print(f"Checkpoint time: {checkpoint['timestamp']}")
+    elif args.start_index is not None:
+        start_index = args.start_index
+        print(f"Starting at explicit --start-index: {start_index}")
 
-    # Load dataset
-    print("\nLoading dataset from HuggingFace...")
-    dataset = load_dataset("tmquan/phapdien-moj-gov-vn", split="train")
-    total_articles = len(dataset)
-    print(f"Dataset loaded: {total_articles} articles")
+    print("\nLoading metadata from HuggingFace...")
+    metadata_rows = load_dataset(LEGAL_DATASET_NAME, LEGAL_DATASET_METADATA_CONFIG, split=LEGAL_DATASET_SPLIT)
+    total_documents = len(metadata_rows)
 
-    # Ensure collection exists
+    # Respect --end-index if provided
+    end_index = args.end_index if args.end_index is not None else total_documents - 1
+
+    # Guard against empty or reversed ranges
+    if end_index < start_index:
+        print(f"\nRange [{start_index}, {end_index}] is empty — nothing to process.")
+        return
+
+    end_index = min(end_index, total_documents - 1)
+
+    print(f"Metadata loaded: {total_documents} documents")
+    print(f"Processing range: [{start_index}, {end_index}] (inclusive)")
+
+    print("Loading content parquet directly...")
+    content_by_id = load_content_by_id()
+    print(f"Content rows available: {len(content_by_id)}")
+
+    print("Loading relationships parquet directly...")
+    relationships_by_doc_id = load_relationships_by_doc_id()
+    print(f"Relationship groups available: {len(relationships_by_doc_id)}")
+
     print(f"\nEnsuring Qdrant collection '{QDRANT_COLLECTION_NAME}' exists...")
     client = get_qdrant_client()
     ensure_collection_exists(client)
 
-    # Process articles
-    articles_to_process = []
-    for i in range(start_index, total_articles):
-        row = dataset[i]
-        content_text = row.get("content_text", "")
+    batch_size = INGEST_BATCH_SIZE
+    pending_records: list[dict] = []
+    processed_documents = 0
 
-        # Skip empty content
-        if not content_text or not content_text.strip():
+    for i in range(start_index, end_index + 1):
+        row = metadata_rows[i]
+        doc_id = str(row["id"])
+        content_html = content_by_id.get(doc_id, "")
+        if not content_html:
             continue
 
-        article = {
-            "id": row.get("article_anchor", str(i)),
-            "content_text": content_text,
-            "article_title": row.get("article_title", ""),
-            "article_anchor": row.get("article_anchor", ""),
-            "topic_title": row.get("topic_title", ""),
-            "topic_id": row.get("topic_id", ""),
-            "demuc_title": row.get("demuc_title", ""),
-            "demuc_id": row.get("demuc_id", ""),
-            "source_url": row.get("source_url", ""),
-        }
-        articles_to_process.append(article)
+        pending_records.extend(
+            build_chunk_records(
+                row=row,
+                content_html=content_html,
+                relationships=relationships_by_doc_id.get(doc_id, []),
+            )
+        )
+        processed_documents += 1
 
-        if args.limit is not None and len(articles_to_process) >= args.limit:
+        should_flush = len(pending_records) >= batch_size
+        reached_limit = args.limit is not None and processed_documents >= args.limit
+        at_end = i == end_index
+        if not should_flush and not reached_limit and not at_end:
+            continue
+
+        if pending_records:
+            print(f"\nUpserting {len(pending_records)} chunks after metadata index {i}")
+            ingest_articles(pending_records, batch_size=batch_size)
+            last_record_id = pending_records[-1]["id"]
+            save_checkpoint(i, last_record_id, checkpoint_path=checkpoint_path, worker_id=args.worker_id)
+            print(f"  Checkpoint saved: index {i}, last chunk {last_record_id}")
+            pending_records = []
+
+        if reached_limit:
             break
-
-    if args.limit is not None:
-        print(f"Limit applied: {args.limit}")
-    print(f"Articles to process: {len(articles_to_process)}")
-
-    # Process in batches
-    batch_size = INGEST_BATCH_SIZE
-    total_batches = (len(articles_to_process) + batch_size - 1) // batch_size
-
-    for batch_num in range(total_batches):
-        batch_start = batch_num * batch_size
-        batch_end = min(batch_start + batch_size, len(articles_to_process))
-        batch = articles_to_process[batch_start:batch_end]
-
-        current_index = start_index + batch_start
-        print(f"\nBatch {batch_num + 1}/{total_batches}")
-        print(f"  Processing indices {current_index} to {current_index + len(batch) - 1}")
-
-        # Ingest batch
-        ingest_articles(batch, batch_size)
-
-        # Save checkpoint
-        last_article = batch[-1]
-        save_checkpoint(current_index + len(batch) - 1, last_article["id"])
-        print(f"  Checkpoint saved: index {current_index + len(batch) - 1}")
 
     print("\n" + "=" * 60)
     print("Ingestion complete!")
-    print(f"Total articles processed: {len(articles_to_process)}")
+    print(f"Metadata documents processed: {processed_documents}")
     print("=" * 60)
 
 

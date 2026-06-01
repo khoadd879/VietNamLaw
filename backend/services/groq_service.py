@@ -20,11 +20,9 @@ _key_rotation_lock = Lock()
 
 
 def build_prompt(question: str, context_chunks: list[str]) -> str:
-    context = "\n\n".join(context_chunks)
+    context = "\n".join(context_chunks)
     return (
-        "Bạn là trợ lý pháp luật Việt Nam. "
-        "Chỉ dựa trên ngữ cảnh được cung cấp. "
-        "Nếu ngữ cảnh không đủ, nói rõ là chưa đủ thông tin.\n\n"
+        "Bạn là trợ lý pháp luật Việt Nam. Trả lời dựa trên ngữ cảnh dưới đây.\n"
         f"Ngữ cảnh:\n{context}\n\n"
         f"Câu hỏi: {question}"
     )
@@ -82,7 +80,10 @@ def _generate_with_key(api_key: str, prompt: str) -> str:
 
 
 def generate_answer(question: str, contexts: list[dict[str, str]]) -> str:
-    context_chunks = [item["content_text"] for item in contexts]
+    context_chunks = [
+        f"[{item.get('title', 'Văn bản pháp luật')}]\n{item['content_text']}"
+        for item in contexts
+    ]
     prompt = build_prompt(question=question, context_chunks=context_chunks)
 
     if not GROQ_API_KEYS:

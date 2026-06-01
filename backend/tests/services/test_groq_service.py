@@ -35,13 +35,13 @@ def test_build_prompt_includes_question_and_context() -> None:
     prompt = build_prompt(
         question="Điều kiện đơn phương ly hôn là gì?",
         context_chunks=[
-            "Luật Hôn nhân và Gia đình quy định về quyền yêu cầu ly hôn.",
-            "Tòa án xem xét tình trạng hôn nhân trầm trọng.",
+            "[Thông tư số 01/2026/TT-BTP]\nLuật Hôn nhân và Gia đình quy định về quyền yêu cầu ly hôn.",
+            "[Thông tư số 02/2026/TT-BTP]\nTòa án xem xét tình trạng hôn nhân trầm trọng.",
         ],
     )
 
     assert "Điều kiện đơn phương ly hôn là gì?" in prompt
-    assert "Luật Hôn nhân và Gia đình" in prompt
+    assert "[Thông tư số 01/2026/TT-BTP]" in prompt
     assert "Tòa án xem xét" in prompt
 
 
@@ -53,7 +53,7 @@ def test_generate_answer_returns_model_content() -> None:
 
         answer = generate_answer(
             question="Ly hôn là gì?",
-            contexts=[{"content_text": "Ngữ cảnh pháp luật"}],
+            contexts=[{"title": "Thông tư số 01/2026/TT-BTP", "content_text": "Ngữ cảnh pháp luật"}],
         )
 
     assert answer == "Câu trả lời Groq"
@@ -68,7 +68,7 @@ def test_generate_answer_returns_fallback_when_content_missing() -> None:
 
         answer = generate_answer(
             question="Ly hôn là gì?",
-            contexts=[{"content_text": "Ngữ cảnh pháp luật"}],
+            contexts=[{"title": "Thông tư số 01/2026/TT-BTP", "content_text": "Ngữ cảnh pháp luật"}],
         )
 
     assert answer == FALLBACK_ANSWER
@@ -93,7 +93,7 @@ def test_generate_answer_rotates_to_next_key_on_retryable_error() -> None:
     with patch("services.groq_service.Groq", side_effect=[first_client, second_client]) as mock_groq:
         answer = generate_answer(
             question="Ly hôn là gì?",
-            contexts=[{"content_text": "Ngữ cảnh pháp luật"}],
+            contexts=[{"title": "Thông tư số 01/2026/TT-BTP", "content_text": "Ngữ cảnh pháp luật"}],
         )
 
     assert answer == "Từ key 2"
@@ -117,7 +117,7 @@ def test_generate_answer_returns_pool_exhausted_fallback_when_all_keys_fail() ->
     with patch("services.groq_service.Groq", side_effect=[client, client, client]):
         answer = generate_answer(
             question="Ly hôn là gì?",
-            contexts=[{"content_text": "Ngữ cảnh pháp luật"}],
+            contexts=[{"title": "Thông tư số 01/2026/TT-BTP", "content_text": "Ngữ cảnh pháp luật"}],
         )
 
     assert answer == FALLBACK_POOL_EXHAUSTED_ANSWER
