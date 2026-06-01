@@ -23,7 +23,12 @@ def _tokenize(text: str) -> list[str]:
 
 
 def _scroll_all_points(batch_size: int = 200) -> Iterable[dict]:
-    """Yield every point in the Qdrant collection as a dict."""
+    """Yield every point in the Qdrant collection as a 5-field dict.
+
+    Returned keys: ``id``, ``content_text``, ``title`` (from ``article_title``),
+    ``source_url``. These are the only fields consumed by hybrid_search and
+    the LLM context. Extra Qdrant payload fields are ignored.
+    """
     client = get_qdrant_client()
     offset = None
     while True:
@@ -39,10 +44,7 @@ def _scroll_all_points(batch_size: int = 200) -> Iterable[dict]:
             yield {
                 "id": str(point.id),
                 "content_text": point.payload.get("content_text", ""),
-                "title": point.payload.get("title", ""),
-                "article_label": point.payload.get("article_label"),
-                "chapter_label": point.payload.get("chapter_label"),
-                "loai_van_ban": point.payload.get("loai_van_ban", ""),
+                "title": point.payload.get("article_title", ""),
                 "source_url": point.payload.get("source_url", ""),
             }
         if next_offset is None:
