@@ -8,9 +8,30 @@ export interface ChatMessage {
   sources?: string[]
 }
 
+export interface LawyerSection {
+  loi_chao: string
+  tom_tat_vu_viec: string
+  phan_tich_phap_ly: string
+  phuong_an_khuyen_nghi: string[]
+  rui_ro_can_luu_y: string[]
+  cau_hoi_hoi_them: string[]
+  disclaimer: string
+  trich_dan_nguon: string[]
+}
+
+export interface ChatUiMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  sources?: string[]
+  structured?: LawyerSection | null
+  createdAt: string
+}
+
 export interface ChatResponse {
   reply: string
   sources?: string[]
+  structured?: LawyerSection | null
 }
 
 export interface AuthResponse {
@@ -254,14 +275,19 @@ export async function sendMessage(sessionId: string, message: string): Promise<C
   return res.json()
 }
 
-export function mapMessageHistory(messages: MessageResponse[]): ChatMessage[] {
-  return messages.map((message) => ({
-    role: message.role === 'user' ? 'user' : 'assistant',
-    content: message.content,
-    sources: Array.isArray(message.sources_json?.sources)
-      ? (message.sources_json?.sources as string[])
-      : undefined,
-  }))
+export function mapMessageHistory(messages: MessageResponse[]): ChatUiMessage[] {
+  return messages
+    .map((message) => ({
+      id: message.id,
+      role: (message.role === 'user' ? 'user' : 'assistant') as 'user' | 'assistant',
+      content: message.content,
+      sources: Array.isArray(message.sources_json?.sources)
+        ? (message.sources_json?.sources as string[])
+        : undefined,
+      structured: (message.sources_json?.structured as LawyerSection | null | undefined) ?? null,
+      createdAt: '',
+    }))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 }
 
 export async function ensureSession(): Promise<string> {
