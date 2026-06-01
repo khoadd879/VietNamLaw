@@ -4,9 +4,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Load .env from the backend directory (where this file lives) regardless of CWD.
-# Without an explicit path, load_dotenv() looks in CWD — which means running
-# `uvicorn main:app --reload` from the repo root silently fails to find
-# backend/.env, leaving NEON_DATABASE_URL empty.
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(_BACKEND_DIR / ".env")
 
@@ -19,7 +16,6 @@ LEGAL_DATASET_CONTENT_CONFIG = os.getenv("LEGAL_DATASET_CONTENT_CONFIG", "conten
 LEGAL_DATASET_RELATIONSHIPS_CONFIG = os.getenv("LEGAL_DATASET_RELATIONSHIPS_CONFIG", "relationships")
 LEGAL_DATASET_SPLIT = os.getenv("LEGAL_DATASET_SPLIT", "data")
 LEGAL_CHUNK_MAX_CHARS = int(os.getenv("LEGAL_CHUNK_MAX_CHARS", "1500"))
-LEGAL_ARTICLE_CHAPTER_THRESHOLD = int(os.getenv("LEGAL_ARTICLE_CHAPTER_THRESHOLD", "3"))
 GROQ_API_KEYS = [
     key.strip()
     for key in [
@@ -48,6 +44,5 @@ BM25_INDEX_PATH = os.getenv("BM25_INDEX_PATH", "./data/bm25_index.pkl")
 HYBRID_VECTOR_WEIGHT = float(os.getenv("HYBRID_VECTOR_WEIGHT", "0.6"))
 HYBRID_BM25_WEIGHT = float(os.getenv("HYBRID_BM25_WEIGHT", "0.4"))
 MULTI_QUERY_COUNT = int(os.getenv("MULTI_QUERY_COUNT", "2"))
-CROSSREF_MAX_HOPS = int(os.getenv("CROSSREF_MAX_HOPS", "1"))
-CROSSREF_MAX_CHUNKS = int(os.getenv("CROSSREF_MAX_CHUNKS", "5"))
+PHAPDIEN_MAX_CONTENT_CHARS = int(os.getenv("PHAPDIEN_MAX_CONTENT_CHARS", "10000"))
 RETRIEVAL_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "8"))
