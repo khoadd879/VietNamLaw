@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import uuid4
 from entities.chat_message import ChatMessage
 from entities.chat_session import ChatSession
@@ -67,3 +68,70 @@ def save_message(
         sources_json=json.dumps(sources_json) if sources_json else None,
     )
     return create_message(db, message)
+
+
+def get_or_create_session(db, user_id: str, title: str | None = None) -> ChatSession:
+    """Alias for create_session; clearer name for intake flow."""
+    return create_session(db, user_id, title)
+
+
+def update_session_case(
+    db,
+    session_id: str,
+    user_id: str,
+    case_type: str | None = None,
+    case_summary: str | None = None,
+    conversation_phase: str | None = None,
+    intake_completed_at: datetime | None = None,
+) -> ChatSession | None:
+    session = get_session_for_user(db, session_id, user_id)
+    if session is None:
+        return None
+    if case_type is not None:
+        session.case_type = case_type
+    if case_summary is not None:
+        session.case_summary = case_summary
+    if conversation_phase is not None:
+        session.conversation_phase = conversation_phase
+    if intake_completed_at is not None:
+        session.intake_completed_at = intake_completed_at
+    session.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(session)
+    return session
+
+
+def add_fact(
+    db,
+    session_id: str,
+    user_id: str,
+    fact_key: str,
+    fact_value: str,
+    source_message_id: str | None = None,
+    confidence: float = 1.0,
+):
+    from entities.case_fact import CaseFact
+    now = datetime.utcnow()
+    fact = CaseFact(
+        id=str(uuid4()),
+        session_id=session_id,
+        user_id=user_id,
+        fact_key=fact_key,
+        fact_value=fact_value,
+        source_message_id=source_message_id,
+        confidence=confidence,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(fact)
+    db.commit()
+    db.refresh(fact)
+    return fact
+
+
+def list_case_facts(db, session_id: str):
+    from entities.case_fact import CaseFact
+    from sqlalchemy import select
+    return db.execute(
+        select(CaseFact).where(CaseFact.session_id == session_id).order_by(CaseFact.created_at.asc())
+    ).scalars().all()

@@ -50,6 +50,36 @@ export interface SessionResponse {
   id: string
   user_id: string
   title: string
+  case_type: string | null
+  case_summary: string | null
+  conversation_phase: string | null
+  intake_completed_at: string | null
+}
+
+export interface IntakeRequest {
+  session_id: string
+  case_type: string
+  case_summary: string
+  initial_facts: Array<{ key: string; value: string }>
+}
+
+export interface IntakeResponse {
+  session_id: string
+  case_type: string
+  case_summary: string
+  facts: Array<{ key: string; value: string; confidence: number }>
+}
+
+export async function submitIntake(req: IntakeRequest): Promise<IntakeResponse> {
+  const res = await fetch(`${API_URL}/chat/intake`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(req),
+  })
+  if (!res.ok) {
+    throw new Error(await readError(res, 'Không thể gửi thông tin ban đầu'))
+  }
+  return res.json()
 }
 
 export interface MessageResponse {

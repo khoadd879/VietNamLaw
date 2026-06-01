@@ -43,7 +43,15 @@ async def create_session(
     db: Session = Depends(get_db),
 ) -> SessionResponse:
     session = svc_create_session(db, str(current_user.id), request.title)
-    return SessionResponse(id=str(session.id), user_id=str(session.user_id), title=session.title)
+    return SessionResponse(
+        id=str(session.id),
+        user_id=str(session.user_id),
+        title=session.title,
+        case_type=session.case_type,
+        case_summary=session.case_summary,
+        conversation_phase=session.conversation_phase,
+        intake_completed_at=session.intake_completed_at,
+    )
 
 
 @router.get("", response_model=list[SessionResponse])
@@ -64,7 +72,15 @@ async def get_session(
     session = svc_get_session(db, session_id, str(current_user.id))
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    return SessionResponse(id=str(session.id), user_id=str(session.user_id), title=session.title)
+    return SessionResponse(
+        id=str(session.id),
+        user_id=str(session.user_id),
+        title=session.title,
+        case_type=session.case_type,
+        case_summary=session.case_summary,
+        conversation_phase=session.conversation_phase,
+        intake_completed_at=session.intake_completed_at,
+    )
 
 
 @router.patch("/{session_id}", response_model=SessionResponse)
@@ -77,7 +93,15 @@ async def rename_session(
     session = svc_rename_session(db, session_id, str(current_user.id), request.title)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    return SessionResponse(id=str(session.id), user_id=str(session.user_id), title=session.title)
+    return SessionResponse(
+        id=str(session.id),
+        user_id=str(session.user_id),
+        title=session.title,
+        case_type=session.case_type,
+        case_summary=session.case_summary,
+        conversation_phase=session.conversation_phase,
+        intake_completed_at=session.intake_completed_at,
+    )
 
 
 @router.delete("/{session_id}")

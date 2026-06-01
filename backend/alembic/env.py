@@ -10,6 +10,7 @@ from db.base import Base
 from entities.user import User
 from entities.chat_session import ChatSession
 from entities.chat_message import ChatMessage
+from entities.case_fact import CaseFact
 
 config = context.config
 
