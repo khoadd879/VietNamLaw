@@ -19,6 +19,7 @@ import {
   setStoredSessionId,
   clearStoredSessionId,
 } from '@/lib/api'
+import { IntakeForm } from '@/components/chat/intake-form'
 import { ChatSidebar } from '@/components/chat/chat-sidebar'
 import { ChatTopbar } from '@/components/chat/chat-topbar'
 import { ChatComposer } from '@/components/chat/chat-composer'
@@ -64,6 +65,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false)
   const [theme, setTheme] = useState<'light' | 'dark'>('light')
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
+  const [intakeDone, setIntakeDone] = useState(false)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -116,6 +118,7 @@ export default function Home() {
       setActiveSessionId(null)
       setMessages([])
       setActiveSessionTitle(DEFAULT_TITLE)
+      setIntakeDone(false)
       return
     }
 
@@ -129,11 +132,13 @@ export default function Home() {
       ])
       setActiveSessionTitle(session.title || DEFAULT_TITLE)
       setMessages(mapMessageHistory(sessionMessages))
+      setIntakeDone(Boolean(session.intake_completed_at))
     } catch {
       // Session may have been deleted; fall back to empty
       setActiveSessionId(null)
       setMessages([])
       setActiveSessionTitle(DEFAULT_TITLE)
+      setIntakeDone(false)
       clearStoredSessionId()
     }
   }
@@ -366,7 +371,12 @@ export default function Home() {
         />
 
         <main className="chat-content">
-          {hasMessages ? (
+          {!intakeDone ? (
+            <IntakeForm
+              sessionId={activeSessionId!}
+              onComplete={() => setIntakeDone(true)}
+            />
+          ) : hasMessages ? (
             <MessageList messages={messages} loading={loading} onCopy={handleCopy} />
           ) : (
             <WelcomeState suggestions={SUGGESTIONS} onAsk={submitMessage} />

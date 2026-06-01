@@ -1,3 +1,4 @@
+from datetime import datetime
 from pydantic import BaseModel
 
 
@@ -13,6 +14,10 @@ class SessionResponse(BaseModel):
     id: str
     user_id: str
     title: str
+    case_type: str | None = None
+    case_summary: str | None = None
+    conversation_phase: str | None = None
+    intake_completed_at: datetime | None = None
 
 
 class MessageResponse(BaseModel):
