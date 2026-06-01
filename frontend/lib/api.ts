@@ -295,6 +295,13 @@ export async function sendAuthedMessage(message: string): Promise<ChatResponse> 
   return sendMessage(sessionId, message)
 }
 
+export function summarizeSessionPreview(messages: ChatMessage[]): string {
+  const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant')
+  const lastUser = [...messages].reverse().find((m) => m.role === 'user')
+  const basis = lastAssistant?.content || lastUser?.content || 'Chưa có nội dung'
+  return basis.replace(/\s+/g, ' ').trim().slice(0, 88)
+}
+
 export function isUnauthorizedError(error: unknown): boolean {
   return error instanceof Error && /Unauthorized|401/i.test(error.message)
 }

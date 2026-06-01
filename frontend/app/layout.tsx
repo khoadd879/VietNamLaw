@@ -1,3 +1,4 @@
+import './globals.css'
 import type { Metadata } from 'next'
 import { Cormorant_Garamond, DM_Sans } from 'next/font/google'
 import { themeScript } from '@/components/theme-script'
@@ -38,7 +39,7 @@ export default function RootLayout({
           }}
         />
       </head>
-      <body className={`${cormorant.variable} ${dmSans.variable}`} style={{ margin: 0 }}>{children}</body>
+      <body className={`${cormorant.variable} ${dmSans.variable}`}>{children}</body>
     </html>
   )
 }
