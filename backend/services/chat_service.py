@@ -97,13 +97,19 @@ def send_chat_message(
 
     # 6. Render display text from structured JSON
     display = _structured_to_display_text(structured)
-    sources = [
-        item.get("source_url", "")
-        for item in contexts
-        if item.get("source_url")
-    ]
+    # Only surface sources the LLM actually cited. If trich_dan_nguon is empty
+    # (e.g. retrieval was unreliable and the LLM correctly refused to invent
+    # citations), don't dump raw context URLs that aren't tied to any specific
+    # article — they look authoritative but mean nothing to the user.
+    cited_sources: list[str] = []
+    if structured.get("trich_dan_nguon"):
+        cited_sources = [
+            item.get("source_url", "")
+            for item in contexts
+            if item.get("source_url")
+        ]
     save_message(
         db, session_id, user_id, "assistant", display,
-        {"sources": sources, "structured": structured},
+        {"sources": cited_sources, "structured": structured},
     )
-    return display, sources, structured
+    return display, cited_sources, structured

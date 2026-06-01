@@ -90,11 +90,28 @@ export function LawyerResponseView({ section, sources }: LawyerResponseViewProps
         </aside>
       )}
 
-      {(sources && sources.length > 0) || section.trich_dan_nguon.length > 0 ? (
+      {/*
+        Only render the sources block when the LLM actually cited something.
+        `sources` from the API are just the raw URLs of retrieved chunks and
+        are only meaningful when paired with a real citation; otherwise they
+        look authoritative but tell the user nothing.
+      */}
+      {section.trich_dan_nguon.length > 0 ? (
         <div className="message-sources" aria-label="Nguồn tham khảo">
-          {[...section.trich_dan_nguon, ...(sources ?? [])].map((s, i) => (
-            <span key={`${s}-${i}`} className="message-source-chip">
-              {s}
+          {section.trich_dan_nguon.map((cite, i) => (
+            <span key={`${cite}-${i}`} className="message-source-chip">
+              {cite}
+              {sources?.[i] && (
+                <a
+                  href={sources[i]}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="message-source-link"
+                  aria-label={`Mở nguồn: ${cite}`}
+                >
+                  ↗
+                </a>
+              )}
             </span>
           ))}
         </div>

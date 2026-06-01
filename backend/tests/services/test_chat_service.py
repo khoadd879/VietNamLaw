@@ -133,3 +133,66 @@ def test_send_chat_message_passes_history_to_llm(fake_session, monkeypatch) -> N
 
     send_chat_message(db=fake_session, session_id="s1", user_id="u1", message="mới")
     assert captured["history_len"] == 1
+
+
+def test_chat_returns_empty_sources_when_llm_does_not_cite(fake_session, monkeypatch) -> None:
+    """When the LLM returns empty trich_dan_nguon, chat must NOT leak raw context URLs."""
+    monkeypatch.setattr(
+        chat_service, "search_legal_context",
+        lambda *_, **__: [
+            {"content_text": "ctx1", "title": "L1", "source_url": "https://phapdien/1"},
+            {"content_text": "ctx2", "title": "L2", "source_url": "https://phapdien/2"},
+        ],
+    )
+    monkeypatch.setattr(chat_service, "list_recent_messages", lambda *_, **__: [])
+    monkeypatch.setattr(chat_service, "save_message", lambda *_, **__: object())
+    monkeypatch.setattr(
+        chat_service, "generate_structured_answer",
+        lambda *_, **__: {
+            "loi_chao": "Chào",
+            "tom_tat_vu_viec": "Chưa rõ vụ việc",
+            "phan_tich_phap_ly": "Hiện chưa tìm thấy điều luật phù hợp...",
+            "phuong_an_khuyen_nghi": [],
+            "rui_ro_can_luu_y": [],
+            "cau_hoi_hoi_them": ["Bạn đang gặp vấn đề gì?"],
+            "disclaimer": "ok",
+            "trich_dan_nguon": [],  # LLM correctly refused to cite
+        },
+    )
+
+    reply, sources, structured = send_chat_message(
+        db=fake_session, session_id="s1", user_id="u1", message="Hỏi chung chung"
+    )
+    assert sources == [], f"Expected no sources, got {sources}"
+    assert structured["trich_dan_nguon"] == []
+
+
+def test_chat_returns_sources_when_llm_cites(fake_session, monkeypatch) -> None:
+    """When the LLM cites a specific article, the matching context URL is surfaced."""
+    monkeypatch.setattr(
+        chat_service, "search_legal_context",
+        lambda *_, **__: [
+            {"content_text": "Điều 51 quy định...", "title": "L1", "source_url": "https://phapdien/51"},
+        ],
+    )
+    monkeypatch.setattr(chat_service, "list_recent_messages", lambda *_, **__: [])
+    monkeypatch.setattr(chat_service, "save_message", lambda *_, **__: object())
+    monkeypatch.setattr(
+        chat_service, "generate_structured_answer",
+        lambda *_, **__: {
+            "loi_chao": "Chào",
+            "tom_tat_vu_viec": "Ly hôn",
+            "phan_tich_phap_ly": "Điều 51 áp dụng...",
+            "phuong_an_khuyen_nghi": [],
+            "rui_ro_can_luu_y": [],
+            "cau_hoi_hoi_them": [],
+            "disclaimer": "ok",
+            "trich_dan_nguon": ["Điều 51 - Luật HNGĐ"],
+        },
+    )
+
+    reply, sources, structured = send_chat_message(
+        db=fake_session, session_id="s1", user_id="u1", message="ly hôn đơn phương"
+    )
+    assert sources == ["https://phapdien/51"]
+    assert structured["trich_dan_nguon"] == ["Điều 51 - Luật HNGĐ"]
