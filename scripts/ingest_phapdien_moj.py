@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Ingestion script for tmquan/phapdien-moj-gov-vn dataset.
-Loads articles directly (already cleaned), splits if too large, and upserts to Qdrant Cloud.
+Loads articles directly (already cleaned, one article per row) and upserts
+each row to Qdrant Cloud as a single point — no chunking.
 """
 
 import argparse
@@ -16,8 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
 
 from core.config import (  # noqa: E402
     INGEST_BATCH_SIZE,
-    LEGAL_ARTICLE_CHAPTER_THRESHOLD,
-    LEGAL_CHUNK_MAX_CHARS,
+    PHAPDIEN_MAX_CONTENT_CHARS,
     QDRANT_API_KEY,
     QDRANT_COLLECTION_NAME,
 )
@@ -25,7 +25,6 @@ from services.qdrant_service import (  # noqa: E402
     ensure_collection_exists,
     get_qdrant_client,
     ingest_articles,
-    split_legal_chunks,
 )
 
 
@@ -63,57 +62,51 @@ def save_checkpoint(last_processed_index: int, last_processed_id: str, checkpoin
         json.dump(checkpoint, f, ensure_ascii=False, indent=2)
 
 
-def build_chunk_records(row: dict, row_index: int) -> list[dict]:
+def build_point_record(row: dict, row_index: int) -> dict | None:
+    """Build a single Qdrant-ready record from one phapdien-moj dataset row.
+
+    Returns None when the row should be skipped (empty content, oversized
+    content beyond embedder capacity, or missing anchor).
+    """
     content_text = (row.get("content_text") or "").strip()
     if not content_text:
-        return []
+        return None
 
-    # Skip cực lớn (>100K chars) - thường là bảng dữ liệu, không phù hợp embed
-    if len(content_text) > 100000:
-        return []
-
-    article_anchor = row.get("article_anchor") or f"article_{row_index}"
-    doc_id = str(article_anchor).lstrip("#") or f"article_{row_index}"
-
-    if len(content_text) <= LEGAL_CHUNK_MAX_CHARS:
-        chunks = [{
-            "content_text": content_text,
-            "chapter_label": row.get("chapter_title"),
-            "article_label": row.get("article_title"),
-            "chunk_level": "article",
-        }]
-    else:
-        chunks = split_legal_chunks(
-            content_text,
-            max_chars=LEGAL_CHUNK_MAX_CHARS,
-            article_threshold=LEGAL_ARTICLE_CHAPTER_THRESHOLD,
+    if len(content_text) > PHAPDIEN_MAX_CONTENT_CHARS:
+        # bge-m3 max ≈ 8K tokens (~20K Vietnamese chars); the top 0.5% of
+        # rows in this dataset are clearly corrupted/legal-compilation dumps
+        # (8MB, 530K, 447K chars) and would exceed the embedder's window.
+        print(
+            f"  [skip] row {row_index} anchor={row.get('article_anchor')!r} "
+            f"content too long ({len(content_text)} chars > {PHAPDIEN_MAX_CONTENT_CHARS})"
         )
-        chunks = [c for c in chunks if str(c.get("content_text", "") or "").strip()]
-        # Cap số chunk để tránh article quá lớn tạo ra hàng trăm chunk
-        if len(chunks) > 30:
-            chunks = chunks[:30]
+        return None
 
-    total_chunks = len(chunks)
-    records = []
-    for chunk_index, chunk in enumerate(chunks):
-        records.append({
-            "id": f"{doc_id}:{chunk_index}",
-            "doc_id": doc_id,
-            "chunk_index": chunk_index,
-            "total_chunks": total_chunks,
-            "content_text": str(chunk.get("content_text", "") or ""),
-            "chapter_label": chunk.get("chapter_label") or row.get("chapter_title"),
-            "article_label": chunk.get("article_label") or row.get("article_title"),
-            "chunk_level": chunk.get("chunk_level", "article"),
-            "title": row.get("article_title", "") or "",
-            "subject_title": row.get("subject_title", "") or "",
-            "topic_title": row.get("topic_title", "") or "",
-            "source_url": row.get("source_url", "") or "",
-            "source_note": row.get("source_note_text", "") or "",
-            "related_note": row.get("related_note_text", "") or "",
-            "relationships": [],
-        })
-    return records
+    article_anchor = row.get("article_anchor")
+    if not article_anchor:
+        print(f"  [skip] row {row_index} missing article_anchor")
+        return None
+
+    return {
+        "id": str(article_anchor).lstrip("#"),
+        "article_anchor": article_anchor,
+        "article_title": row.get("article_title", "") or "",
+        "content_text": content_text,
+        "content_char_len": int(row.get("content_char_len") or len(content_text)),
+        "content_word_count": int(row.get("content_word_count") or 0),
+        "chapter_title": row.get("chapter_title", "") or "",
+        "subject_id": row.get("subject_id", "") or "",
+        "subject_number": int(row.get("subject_number") or 0),
+        "subject_title": row.get("subject_title", "") or "",
+        "topic_id": row.get("topic_id", "") or "",
+        "topic_number": int(row.get("topic_number") or 0),
+        "topic_title": row.get("topic_title", "") or "",
+        "source_note_text": row.get("source_note_text", "") or "",
+        "source_links": list(row.get("source_links") or []),
+        "related_note_text": row.get("related_note_text", "") or "",
+        "source_url": row.get("source_url", "") or "",
+        "scraped_at": row.get("scraped_at", "") or "",
+    }
 
 
 def _parse_args() -> argparse.Namespace:
@@ -131,7 +124,7 @@ def main() -> None:
     args = _parse_args()
 
     print("=" * 60)
-    print("phapdien-moj-gov-vn Ingestion Script")
+    print("phapdien-moj-gov-vn Ingestion Script (whole-article passthrough)")
     print("=" * 60)
 
     if not QDRANT_API_KEY:
@@ -178,10 +171,10 @@ def main() -> None:
 
     for i in range(start_index, end_index + 1):
         row = dataset[i]
-        records = build_chunk_records(row, i)
-        if not records:
+        record = build_point_record(row, i)
+        if record is None:
             continue
-        pending.extend(records)
+        pending.append(record)
         processed += 1
 
         should_flush = len(pending) >= batch_size
@@ -191,11 +184,11 @@ def main() -> None:
             continue
 
         if pending:
-            print(f"\nUpserting {len(pending)} chunks after index {i}")
+            print(f"\nUpserting {len(pending)} points after index {i}")
             ingest_articles(pending, batch_size=batch_size)
             last_id = pending[-1]["id"]
             save_checkpoint(i, last_id, checkpoint_path=checkpoint_path, worker_id=args.worker_id)
-            print(f"  Checkpoint saved: index {i}, last chunk {last_id}")
+            print(f"  Checkpoint saved: index {i}, last point {last_id}")
             pending = []
 
         if reached_limit:
