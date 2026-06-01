@@ -2,38 +2,35 @@
 
 This project uses Qdrant Cloud for vector storage. No local container required.
 
-## Getting Started
-
-### 1. Create Qdrant Cloud Account
-
-1. Go to [cloud.qdrant.io](https://cloud.qdrant.io)
-2. Sign up / log in
-3. Create a new cluster (free tier available)
-
-### 2. Get Credentials
-
-From your cluster dashboard, copy:
-- **Cluster URL**: Something like `https://xxxxxxx.cloud.qdrant.io`
-- **API Key**: Found in cluster settings
-
-### 3. Configure Backend
+## Configure Backend
 
 Add to `backend/.env`:
 
-```
+```env
 QDRANT_URL=https://xxxxxxx.cloud.qdrant.io
 QDRANT_API_KEY=your_api_key_here
+QDRANT_COLLECTION_NAME=legal_articles
 ```
 
-### 4. Create Collection
+## Collection Schema
 
-The backend will create the collection automatically on first run via the Qdrant API. Collection name: `vietnam_laws`
+The backend creates the collection automatically on first ingest with:
+- vector size: `1024`
+- distance: `cosine`
 
-### Verify Connection
+Indexed payload fields:
+- `title`
+- `so_ky_hieu`
+- `loai_van_ban`
+- `co_quan_ban_hanh`
+- `tinh_trang_hieu_luc`
+- `linh_vuc`
+- `nganh`
+- `source_url`
+
+## Verify Connection
 
 ```bash
 cd backend
 python -c "from qdrant_client import QdrantClient; c = QdrantClient(url='YOUR_URL', api_key='YOUR_KEY'); print(c.get_collections())"
 ```
-
-Replace `YOUR_URL` and `YOUR_KEY` with your actual credentials.
