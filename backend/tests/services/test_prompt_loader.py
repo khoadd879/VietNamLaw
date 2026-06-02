@@ -12,7 +12,7 @@ def test_load_prompt_returns_markdown_content() -> None:
     content = load_prompt("lawyer_persona_v1")
     assert isinstance(content, str)
     assert "luật sư tư vấn pháp luật Việt Nam" in content
-    assert "loi_chào" in content  # JSON schema key
+    assert "loi_chao" in content  # JSON schema key
     assert "disclaimer" in content
 
 

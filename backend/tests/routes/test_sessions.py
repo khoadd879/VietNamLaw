@@ -43,7 +43,10 @@ async def test_list_messages_returns_parsed_sources_json_dict(client) -> None:
 
     db = SessionLocal()
     try:
-        u = User(id=str(uuid4()), email="parse-test@example.c", password_hash="x")
+        # Email is unique — randomize so re-runs (and any leftover rows from
+        # previous test sessions, since init_db is session-scoped) don't
+        # trip the UniqueViolation.
+        u = User(id=str(uuid4()), email=f"parse-test-{uuid4()}@example.c", password_hash="x")
         db.add(u)
         db.commit()
         sid = str(uuid4())
@@ -62,7 +65,7 @@ async def test_list_messages_returns_parsed_sources_json_dict(client) -> None:
         )
         db.add(msg)
         db.commit()
-        token = create_access_token({"sub": u.id})
+        token = create_access_token(u.id)
     finally:
         db.close()
 
@@ -77,16 +80,19 @@ async def test_list_messages_returns_parsed_sources_json_dict(client) -> None:
     assert data[0]["sources_json"]["sources"] == ["https://example/51"]
 
 
-def test_list_sessions_route_exists(client):
-    response = client.get("/chat/sessions")
+@pytest.mark.anyio
+async def test_list_sessions_route_exists(client):
+    response = await client.get("/chat/sessions")
     assert response.status_code != 404
 
 
-def test_rename_session_route_exists(client):
-    response = client.patch(f"/chat/sessions/{uuid4()}", json={"title": "Vụ việc đất đai"})
+@pytest.mark.anyio
+async def test_rename_session_route_exists(client):
+    response = await client.patch(f"/chat/sessions/{uuid4()}", json={"title": "Vụ việc đất đai"})
     assert response.status_code != 404
 
 
-def test_list_sessions_requires_authorization(client):
-    response = client.get("/chat/sessions")
+@pytest.mark.anyio
+async def test_list_sessions_requires_authorization(client):
+    response = await client.get("/chat/sessions")
     assert response.status_code in (401, 403)
