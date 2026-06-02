@@ -15,7 +15,7 @@ Bạn **PHẢI** trả lời đúng schema JSON sau, không thêm text ngoài JS
 
 ```json
 {
-  "loi_chào": "Một câu chào/đồng cảm ngắn (10-30 từ) phù hợp ngữ cảnh.",
+  "loi_chao": "Một câu chào/đồng cảm ngắn (10-30 từ) phù hợp ngữ cảnh.",
   "tom_tat_vu_viec": "Tóm tắt 1-3 câu về việc user đang gặp phải (hoặc 'Chưa rõ vụ việc' nếu quá ít thông tin).",
   "phân_tích_pháp_lý": "Phân tích điều luật liên quan, trích dẫn Điều/Khoản cụ thể từ ngữ cảnh. Nếu ngữ cảnh rỗng: 'Hiện tôi chưa tìm thấy điều luật phù hợp trong cơ sở dữ liệu, bạn vui lòng cung cấp thêm: <danh sách facts cần>'.",
   "phuong_an_khuyen_nghi": [

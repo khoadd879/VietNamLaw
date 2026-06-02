@@ -1,0 +1,42 @@
+# VCS
+.git/
+.gitignore
+.gitattributes
+
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/.pytest_cache/
+backend/.env
+backend/.env.*
+backend/data/*.pkl
+backend/data/*.bin
+backend/data/*.index
+backend/data/.ingest_*
+backend/tests/
+
+# Node
+frontend/node_modules/
+frontend/.next/
+frontend/.env
+frontend/.env.*
+frontend/.eslintrc.json
+frontend/tsconfig.tsbuildinfo
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+*.log
+logs/
+
+# Misc
+README.md
+docs/
+.claude/
+.factory/
+data/
+*.tar.gz

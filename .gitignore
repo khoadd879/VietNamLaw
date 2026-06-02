@@ -41,3 +41,8 @@ Thumbs.db
 *.tsbuildinfo
 .pytest_cache/
 .claude/
+
+# Generated runtime artifacts (rebuilt on app startup)
+backend/data/*.pkl
+backend/data/*.bin
+backend/data/*.index

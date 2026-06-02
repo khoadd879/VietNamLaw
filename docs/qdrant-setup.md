@@ -19,14 +19,19 @@ The backend creates the collection automatically on first ingest with:
 - distance: `cosine`
 
 Indexed payload fields:
-- `title`
-- `so_ky_hieu`
-- `loai_van_ban`
-- `co_quan_ban_hanh`
-- `tinh_trang_hieu_luc`
-- `linh_vuc`
-- `nganh`
+- `article_anchor`
+- `article_title`
+- `chapter_title`
+- `subject_title`
+- `topic_title`
 - `source_url`
+- `scraped_at`
+
+These 7 fields are all that `search_legal_context` filters on. The other 10
+phapdien-moj fields (`content_text`, `content_char_len`, `content_word_count`,
+`subject_id`, `subject_number`, `topic_id`, `topic_number`, `source_note_text`,
+`related_note_text`, `source_links`) are stored verbatim in payload for display
+and audit, but not indexed.
 
 ## Verify Connection
 

@@ -159,12 +159,12 @@ def test_generate_answer_returns_pool_exhausted_fallback_when_no_keys_configured
 def test_generate_structured_answer_uses_json_response_format() -> None:
     set_key_pool("key-1")
     with patch("services.groq_service.Groq") as mock_groq:
-        mock_groq.return_value.chat.completions.create.return_value = make_response('{"loi_chào":"Chào bạn"}')
+        mock_groq.return_value.chat.completions.create.return_value = make_response('{"loi_chao":"Chào bạn"}')
         result = generate_structured_answer(
             question="Ly hôn thế nào?",
             contexts=[{"content_text": "Điều 51 Luật HNGĐ"}],
         )
-    assert result == {"loi_chào": "Chào bạn"}
+    assert result == {"loi_chao": "Chào bạn"}
     call_kwargs = mock_groq.return_value.chat.completions.create.call_args.kwargs
     assert call_kwargs["response_format"] == {"type": "json_object"}
 

@@ -1,6 +1,5 @@
 import logging
 
-from services.crossref_walker import walk_relationships
 from services.hybrid_search import hybrid_search
 from services.multi_query import expand_query as multi_query_expand
 from services.citation_verifier import verify_citations
@@ -69,7 +68,7 @@ def _multi_query_retrieve(
     seen: dict[str, dict] = {}
     for q in queries:
         for chunk in hybrid_search(q, filters=filters, top_k=top_k):
-            cid = chunk.get("id") or chunk.get("doc_id")
+            cid = chunk.get("id")
             if cid is None:
                 continue
             if cid not in seen or chunk.get("score", 0) > seen[cid].get("score", 0):
@@ -118,17 +117,6 @@ def send_chat_message(db, session_id, user_id, message) -> tuple[str, list[str],
 
     # SPRINT 3: hybrid + multi-query retrieval
     contexts = _multi_query_retrieve(message, filters=None, top_k=RETRIEVAL_TOP_K)
-
-    # SPRINT 3: cross-ref walker
-    if contexts:
-        related = walk_relationships(contexts)
-        # Dedupe against existing contexts
-        seen_ids = {c.get("id") or c.get("doc_id") for c in contexts}
-        for r in related:
-            rid = r.get("id") or r.get("doc_id")
-            if rid and rid not in seen_ids:
-                contexts.append(r)
-                seen_ids.add(rid)
 
     if not _is_retrieval_reliable(contexts):
         logger.info("Retrieval unreliable for session=%s", session_id)

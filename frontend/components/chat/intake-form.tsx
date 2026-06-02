@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { submitIntake, createSession, type IntakeResponse } from '@/lib/api'
+import { submitIntake, createSession, setStoredSessionId, type IntakeResponse } from '@/lib/api'
 
 const CASE_TYPES = [
   { value: 'hôn nhân gia đình', label: 'Hôn nhân & Gia đình' },
@@ -52,9 +52,12 @@ export function IntakeForm({ sessionId, onComplete, onSessionCreated }: IntakeFo
       if (!activeId) {
         const session = await createSession('Cuộc tư vấn mới')
         activeId = session.id
-        if (typeof window !== 'undefined') {
-          window.localStorage.setItem('vnl_active_session_id', activeId)
-        }
+        // Use the same localStorage key as the rest of the app (SESSION_KEY
+        // in lib/api.ts) so the freshly created session is the one used by
+        // subsequent /chat calls. A previous version wrote to
+        // 'vnl_active_session_id' which no other code reads, leaving the
+        // app thinking there is no active session.
+        setStoredSessionId(activeId)
         onSessionCreated?.(activeId)
       }
       const resp = await submitIntake({

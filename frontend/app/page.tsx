@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, FormEvent, KeyboardEvent } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   clearAuthState,
+  ensureSession,
   isLoggedIn,
   isNotFoundError,
   isUnauthorizedError,
@@ -14,7 +15,7 @@ import {
   listSessions,
   mapMessageHistory,
   renameSession,
-  sendAuthedMessage,
+  sendMessage,
   getStoredSessionId,
   setStoredSessionId,
   clearStoredSessionId,
@@ -224,6 +225,14 @@ export default function Home() {
       return
     }
 
+    // User moved past the intake form by typing in the composer. Flip the
+    // flag so the content area swaps from <IntakeForm> to <MessageList> on
+    // the next render — otherwise the local message we add below would be
+    // invisible behind the form.
+    if (!intakeDone) {
+      setIntakeDone(true)
+    }
+
     const userMsg: ChatUiMessage = {
       id: `local-${Date.now()}-user`,
       role: 'user',
@@ -238,7 +247,16 @@ export default function Home() {
     setLoading(true)
 
     try {
-      const res = await sendAuthedMessage(text.trim())
+      // Resolve the session that the message will be sent under. We use
+      // ensureSession() directly (instead of sendAuthedMessage) so we can
+      // sync the local activeSessionId state with whatever session was used
+      // — otherwise a freshly created session would only live in
+      // localStorage and subsequent re-renders could create another one.
+      const sessionId = await ensureSession()
+      if (activeSessionId !== sessionId) {
+        setActiveSessionId(sessionId)
+      }
+      const res = await sendMessage(sessionId, text.trim())
       setMessages((prev) => [
         ...prev,
         {
@@ -252,7 +270,7 @@ export default function Home() {
       ])
 
       // Refresh sessions so the sidebar reflects the new activity
-      hydrateSessions(activeSessionId).catch(() => undefined)
+      hydrateSessions(sessionId).catch(() => undefined)
     } catch (error) {
       if (isUnauthorizedError(error)) {
         clearAuthState()
@@ -261,8 +279,14 @@ export default function Home() {
       }
 
       if (isNotFoundError(error)) {
+        // Stored session was deleted on the server — drop the bad id and
+        // retry with a fresh one. (Previous version retried with the same
+        // dead session id and surfaced a generic error.)
+        clearStoredSessionId()
         try {
-          const res = await sendAuthedMessage(text.trim())
+          const sessionId = await ensureSession()
+          setActiveSessionId(sessionId)
+          const res = await sendMessage(sessionId, text.trim())
           setMessages((prev) => [
             ...prev,
             {
@@ -274,6 +298,7 @@ export default function Home() {
               createdAt: new Date().toISOString(),
             },
           ])
+          hydrateSessions(sessionId).catch(() => undefined)
           return
         } catch {
           setMessages((prev) => [

@@ -1,7 +1,6 @@
 import re
 import time
 import unicodedata
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from html import unescape
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
@@ -21,7 +20,6 @@ from qdrant_client.models import (
 from core.config import (
     INGEST_BATCH_SIZE,
     INGEST_CONCURRENT_WORKERS,
-    LEGAL_ARTICLE_CHAPTER_THRESHOLD,
     OLLAMA_EMBED_BATCH_SIZE,
     OLLAMA_EMBEDDING_MODEL,
     OLLAMA_EMBED_TIMEOUT,
@@ -32,6 +30,12 @@ from core.config import (
 )
 from html.parser import HTMLParser
 
+
+# ---------------------------------------------------------------------------
+# Legacy th1nhng0 path: kept for scripts/ingest_phapdien.py. Will be removed
+# in a follow-up when the th1nhng0 collection is also re-ingested via the
+# passthrough pipeline. Do not use for new code.
+# ---------------------------------------------------------------------------
 
 class HTMLLegalParser:
     """Parser for Vietnamese legal HTML documents."""
@@ -47,7 +51,7 @@ class HTMLLegalParser:
     KHOAN_PATTERNS = (
         re.compile(r"(?im)^\s*Khoản\s+(\d+)[^\n]*"),
         re.compile(r"(?im)^\s*<p[^>]*>[^<]*Khoản\s+(\d+)[^\n]*</p>"),
-        re.compile(r"(?im)^\s*(\d+)\.\s+[A-ZÀ-ỹ]"),
+        re.compile(r"(?im)^\s*(\d+)\.\s+[A-ZÀ-Ỹ]"),
     )
 
     def __init__(self) -> None:
@@ -152,7 +156,6 @@ class HTMLLegalParser:
         return [c for c in chunks if c["content_text"]]
 
 
-
 class _HTMLLegalParserImpl(HTMLParser):
     def __init__(self, outer: HTMLLegalParser) -> None:
         super().__init__()
@@ -183,18 +186,14 @@ class _HTMLLegalParserImpl(HTMLParser):
 
 
 _EMBED_TIMEOUT_SECONDS = float(OLLAMA_EMBED_TIMEOUT)
-_VBPL_INDEX_FIELDS = (
-    "title",
-    "so_ky_hieu",
-    "loai_van_ban",
-    "co_quan_ban_hanh",
-    "tinh_trang_hieu_luc",
-    "linh_vuc",
-    "nganh",
+_PHAPDIEN_INDEX_FIELDS = (
+    "article_anchor",
+    "article_title",
+    "chapter_title",
+    "subject_title",
+    "topic_title",
     "source_url",
-    "chapter_label",
-    "article_label",
-    "chunk_level",
+    "scraped_at",
 )
 
 _CHAPTER_PATTERN = re.compile(r"(?im)^\s*(Chương\s+[IVXLCDM0-9]+[^\n]*)\s*$")
@@ -202,10 +201,8 @@ _ARTICLE_PATTERN = re.compile(r"(?im)^\s*(Điều\s+\d+)[.:]?\s*")
 _KHOAN_PATTERN = re.compile(r"(?im)^\s*Khoản\s+(\d+)[^\n]*")
 
 
-def detect_doc_format(
-    text: str,
-    article_threshold: int = LEGAL_ARTICLE_CHAPTER_THRESHOLD,
-) -> str:
+# Legacy th1nhng0 path — see note at top of file.
+def detect_doc_format(text: str, article_threshold: int = 3) -> str:
     article_count = len(_ARTICLE_PATTERN.findall(text or ""))
     chapter_count = len(_CHAPTER_PATTERN.findall(text or ""))
     if article_count >= article_threshold or chapter_count > 0:
@@ -213,10 +210,11 @@ def detect_doc_format(
     return "decision"
 
 
+# Legacy th1nhng0 path — see note at top of file.
 def split_legal_chunks(
     text: str,
     max_chars: int = 1200,
-    article_threshold: int = LEGAL_ARTICLE_CHAPTER_THRESHOLD,
+    article_threshold: int = 3,
 ) -> list[dict[str, str | None]]:
     normalized_text = (text or "").strip()
     if not normalized_text:
@@ -425,8 +423,6 @@ def _split_by_articles(
     return split_paragraph_chunks(normalized_text)
 
 
-
-
 def get_qdrant_client() -> QdrantClient:
     return QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, timeout=300)
 
@@ -443,7 +439,7 @@ def ensure_collection_exists(client: QdrantClient) -> None:
         vectors_config=VectorParams(size=1024, distance=Distance.COSINE),
     )
 
-    for field_name in _VBPL_INDEX_FIELDS:
+    for field_name in _PHAPDIEN_INDEX_FIELDS:
         client.create_payload_index(
             collection_name=QDRANT_COLLECTION_NAME,
             field_name=field_name,
@@ -451,6 +447,7 @@ def ensure_collection_exists(client: QdrantClient) -> None:
         )
 
 
+# Legacy th1nhng0 path — see note at top of file.
 def clean_html_text(content_html: str) -> str:
     normalized = re.sub(r"<\s*br\s*/?>", "\n", content_html, flags=re.IGNORECASE)
     normalized = re.sub(r"<\s*/p\s*>", "\n\n", normalized, flags=re.IGNORECASE)
@@ -467,6 +464,7 @@ def clean_html_text(content_html: str) -> str:
     return text.strip()
 
 
+# Legacy th1nhng0 path — see note at top of file.
 def split_document_chunks(text: str, max_chars: int = 1200) -> list[str]:
     paragraphs = [part.strip() for part in text.split("\n\n") if part.strip()]
     chunks: list[str] = []
@@ -498,6 +496,7 @@ def split_document_chunks(text: str, max_chars: int = 1200) -> list[str]:
     return [chunk for chunk in chunks if chunk]
 
 
+# Legacy th1nhng0 path — see note at top of file.
 def build_vbpl_source_url(doc_id: str) -> str:
     return f"https://vbpl.vn/TW/Pages/vbpq-toanvan.aspx?ItemID={doc_id}"
 
@@ -555,56 +554,128 @@ def embed_texts(texts: list[str], task_type: str | None = None) -> list[list[flo
     return results
 
 
-def ingest_articles(articles: list[dict], batch_size: int | None = None) -> None:
+def ingest_articles(
+    articles: list[dict],
+    batch_size: int | None = None,
+    embed_batch_size: int | None = None,
+    progress: bool = True,
+) -> None:
+    """Embed a batch of phapdien-moj records and upsert as Qdrant points.
+
+    Each input record becomes exactly one Qdrant point. The record is passed
+    through to payload verbatim, with the only filtering being a type check:
+    scalars (str/int/float/bool/None) and lists-of-dicts (for ``source_links``)
+    are forwarded; everything else is dropped to keep the payload serializable.
+    No synthetic fields are added.
+
+    The Qdrant point id is ``uuid5(NAMESPACE_URL, f"phapdien:{anchor}")`` where
+    ``anchor`` is ``article_anchor`` with any leading ``#`` stripped.
+
+    Performance: streams articles through a 2-stage pipeline (embed → upsert).
+    Embedding is the bottleneck on single-GPU bge-m3 (~142 items/s measured on
+    RTX 4060 8GB); upserting to Qdrant Cloud is ~3-4× faster per batch so
+    pipelining keeps the GPU saturated.
+    """
     if batch_size is None:
         batch_size = INGEST_BATCH_SIZE
+    if embed_batch_size is None:
+        embed_batch_size = OLLAMA_EMBED_BATCH_SIZE
     client = get_qdrant_client()
-    workers = INGEST_CONCURRENT_WORKERS
 
-    def _embed_and_build(article: dict) -> PointStruct:
-        vector = embed_texts([article["content_text"]], task_type="RETRIEVAL_DOCUMENT")[0]
-        raw_id = str(article["id"])
-        point_id = str(uuid5(NAMESPACE_URL, f"vbpl:{raw_id}"))
-        return PointStruct(
-            id=point_id,
-            vector=vector,
-            payload={
-                "content_text": article["content_text"],
-                "title": article["title"],
-                "doc_id": article["doc_id"],
-                "chunk_index": article["chunk_index"],
-                "so_ky_hieu": article.get("so_ky_hieu", ""),
-                "loai_van_ban": article.get("loai_van_ban", ""),
-                "co_quan_ban_hanh": article.get("co_quan_ban_hanh", ""),
-                "tinh_trang_hieu_luc": article.get("tinh_trang_hieu_luc", ""),
-                "linh_vuc": article.get("linh_vuc", ""),
-                "nganh": article.get("nganh", ""),
-                "source_url": article["source_url"],
-                "chapter_label": article.get("chapter_label"),
-                "article_label": article.get("article_label"),
-                "chunk_level": article.get("chunk_level", "paragraph"),
-                "total_chunks": article.get("total_chunks"),
-                "relationships": article.get("relationships", []),
-            },
-        )
+    _SCALAR_TYPES = (str, int, float, bool, type(None))
 
-    points = []
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {executor.submit(_embed_and_build, art): art for art in articles}
-        for future in as_completed(futures):
-            points.append(future.result())
+    def _coerce_payload(article: dict) -> dict:
+        out: dict = {}
+        for key, value in article.items():
+            if key == "id":
+                continue
+            if isinstance(value, _SCALAR_TYPES):
+                out[key] = value
+            elif isinstance(value, list) and all(isinstance(x, dict) for x in value):
+                out[key] = value
+        return out
 
-    max_retries = 5
-    for attempt in range(max_retries):
+    def _build_point(article: dict, vector: list[float]) -> PointStruct:
+        anchor = article["article_anchor"].lstrip("#")
+        point_id = str(uuid5(NAMESPACE_URL, f"phapdien:{anchor}"))
+        return PointStruct(id=point_id, vector=vector, payload=_coerce_payload(article))
+
+    def _upsert_with_retry(points: list[PointStruct]) -> None:
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                client.upsert(
+                    collection_name=QDRANT_COLLECTION_NAME,
+                    points=points,
+                    wait=False,
+                )
+                return
+            except Exception as exc:
+                if attempt == max_retries - 1:
+                    raise
+                wait = min(30, 2 ** attempt)
+                print(f"  [upsert retry {attempt + 1}/{max_retries}] {exc} — waiting {wait}s")
+                time.sleep(wait)
+
+    total = len(articles)
+    if total == 0:
+        return
+
+    start = time.time()
+    pending_upsert: list[PointStruct] = []
+    processed = 0
+    last_report = start
+
+    # Stage 1: pre-collect first batch_size worth of points (block on embed for the
+    # initial batch so the caller gets deterministic ordering on the first chunk).
+    # After that, embed next batch while upserting current.
+    def _embed_and_pack(subset: list[dict]) -> list[PointStruct]:
+        texts = [a["content_text"] for a in subset]
+        vectors = embed_texts(texts, task_type="RETRIEVAL_DOCUMENT")
+        return [_build_point(a, v) for a, v in zip(subset, vectors)]
+
+    # Pipeline: iterate in chunks of embed_batch_size, accumulate points
+    # until we have >= batch_size, then upsert.
+    i = 0
+    while i < total:
+        # Embed the next embed_batch_size items
+        embed_chunk = articles[i : i + embed_batch_size]
+        i += len(embed_chunk)
         try:
-            client.upsert(collection_name=QDRANT_COLLECTION_NAME, points=points)
-            return
-        except Exception as exc:
-            if attempt == max_retries - 1:
-                raise
-            wait = 2 ** attempt
-            print(f"  [upsert retry {attempt + 1}/{max_retries}] {exc} — waiting {wait}s")
-            time.sleep(wait)
+            new_points = _embed_and_pack(embed_chunk)
+        except Exception:
+            # On embed failure, retry the same chunk once
+            print(f"  [embed retry once] chunk starting at {i - len(embed_chunk)}")
+            time.sleep(5)
+            new_points = _embed_and_pack(embed_chunk)
+        pending_upsert.extend(new_points)
+        processed += len(new_points)
+
+        # Drain pending_upsert in batch_size chunks
+        while len(pending_upsert) >= batch_size:
+            to_upsert = pending_upsert[:batch_size]
+            pending_upsert = pending_upsert[batch_size:]
+            _upsert_with_retry(to_upsert)
+
+        if progress:
+            now = time.time()
+            if now - last_report >= 5 or processed == total:
+                rate = processed / max(now - start, 0.001)
+                print(
+                    f"  [ingest] {processed:,}/{total:,}  "
+                    f"{rate:.0f} items/s  "
+                    f"elapsed={now - start:.0f}s  "
+                    f"eta={(total - processed) / max(rate, 0.001):.0f}s"
+                )
+                last_report = now
+
+    # Flush remainder
+    if pending_upsert:
+        _upsert_with_retry(pending_upsert)
+
+    if progress:
+        dt = time.time() - start
+        print(f"  [ingest done] {total:,} items in {dt:.0f}s  ({total / max(dt, 0.001):.0f} items/s)")
 
 
 def search_legal_context(
@@ -618,7 +689,7 @@ def search_legal_context(
     qdrant_filter = None
     if filters:
         conditions = []
-        for field_name in ("loai_van_ban", "co_quan_ban_hanh", "linh_vuc", "nganh", "tinh_trang_hieu_luc"):
+        for field_name in ("subject_title", "topic_title", "chapter_title", "source_url", "article_anchor"):
             if filters.get(field_name):
                 conditions.append(
                     FieldCondition(
@@ -639,19 +710,10 @@ def search_legal_context(
 
     return [
         {
+            "id": str(point.id),
             "content_text": point.payload.get("content_text", ""),
-            "title": point.payload.get("title", ""),
+            "title": point.payload.get("article_title", ""),
             "source_url": point.payload.get("source_url", ""),
-            "doc_id": point.payload.get("doc_id", ""),
-            "chunk_index": point.payload.get("chunk_index", 0),
-            "loai_van_ban": point.payload.get("loai_van_ban", ""),
-            "co_quan_ban_hanh": point.payload.get("co_quan_ban_hanh", ""),
-            "tinh_trang_hieu_luc": point.payload.get("tinh_trang_hieu_luc", ""),
-            "chapter_label": point.payload.get("chapter_label"),
-            "article_label": point.payload.get("article_label"),
-            "chunk_level": point.payload.get("chunk_level", "paragraph"),
-            "total_chunks": point.payload.get("total_chunks"),
-            "relationships": point.payload.get("relationships", []),
             "score": point.score,
         }
         for point in results
